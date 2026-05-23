@@ -1,0 +1,159 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>wardrobe</title>
+    <link rel="stylesheet" href="style.css" />
+
+    <!--
+      Import map: pulls Konva and @imgly/background-removal directly from
+      esm.sh. No npm, no build step — open this file with Live Server and go.
+    -->
+    <script type="importmap">
+      {
+        "imports": {
+          "konva": "https://esm.sh/konva@9.3.16",
+          "@imgly/background-removal": "https://esm.sh/@imgly/background-removal@1.4.5"
+        }
+      }
+    </script>
+  </head>
+  <body>
+    <!-- ============================ APP SHELL ============================ -->
+    <div id="app">
+      <!-- top bar -->
+      <header class="topbar">
+        <span class="brand">~/wardrobe</span>
+        <span class="branch">main</span>
+        <span class="sep">·</span>
+        <span class="muted">local outfit editor</span>
+        <span class="grow"></span>
+        <button id="btn-export" class="ghost" disabled>$ export.png</button>
+        <button id="btn-clear" class="ghost" disabled>$ clear</button>
+      </header>
+
+      <!-- main grid: sidebar | canvas | inspector -->
+      <main class="grid">
+        <!-- LEFT: wardrobe -->
+        <aside class="pane left">
+          <div class="pane-head">
+            <span class="title">wardrobe</span>
+            <span class="muted" id="item-count">0</span>
+          </div>
+
+          <!-- upload block -->
+          <div class="upload">
+            <div class="upload-row">
+              <label class="upload-label" for="upload-category">cat</label>
+              <select id="upload-category"></select>
+            </div>
+            <div class="upload-row">
+              <label class="upload-label" for="upload-bg">bg</label>
+              <select id="upload-bg" title="background removal mode">
+                <option value="auto">auto · mono → ml</option>
+                <option value="mono">mono only · flood-fill</option>
+                <option value="ml">ml only · @imgly</option>
+                <option value="off">off · keep original</option>
+              </select>
+            </div>
+            <label class="upload-drop" id="upload-drop">
+              <input type="file" id="upload-input" accept="image/*" multiple hidden />
+              <span class="upload-hint">[ drop · paste · click ]</span>
+            </label>
+          </div>
+
+          <!-- wardrobe tree -->
+          <div class="tree" id="wardrobe-tree"></div>
+        </aside>
+
+        <!-- CENTER: canvas -->
+        <section class="pane center">
+          <div class="canvas-host" id="canvas-host"></div>
+        </section>
+
+        <!-- RIGHT: inspector + layers -->
+        <aside class="pane right">
+          <div class="pane-head">
+            <span class="title">inspector</span>
+          </div>
+          <div id="inspector" class="inspector">
+            <p class="muted small">// select a layer on canvas</p>
+          </div>
+
+          <div class="pane-head pane-head-sub">
+            <span class="title">layers</span>
+            <span class="muted" id="layer-count">0</span>
+          </div>
+          <div id="layer-list" class="layer-list"></div>
+        </aside>
+      </main>
+
+      <!-- bottom status bar -->
+      <footer class="statusbar" id="statusbar">
+        <span class="status-item" id="status-bg" title="background removal">
+          <span class="dot loading"></span>
+          <span class="text">bg: …</span>
+        </span>
+        <span class="sep">·</span>
+        <span class="status-item" id="status-storage">idb: —</span>
+        <span class="sep">·</span>
+        <span class="status-item" id="status-items">items: 0</span>
+        <span class="grow"></span>
+        <span class="muted">v0.3 · local-first · MIT</span>
+      </footer>
+    </div>
+
+    <!-- edit-item modal -->
+    <div id="modal" class="modal hidden">
+      <div class="modal-backdrop" data-close="1"></div>
+      <div class="modal-window">
+        <header class="modal-head">
+          <span class="title">edit item</span>
+          <button class="iconbtn" data-close="1" title="esc">x</button>
+        </header>
+        <div class="modal-body">
+          <div class="modal-preview">
+            <img id="modal-preview-img" alt="" />
+            <span class="muted small" id="modal-preview-meta"></span>
+          </div>
+          <div class="modal-fields">
+            <label class="field">
+              <span>name</span>
+              <input type="text" id="modal-name" />
+            </label>
+            <label class="field">
+              <span>category</span>
+              <select id="modal-category"></select>
+            </label>
+            <label class="field">
+              <span>subcategory</span>
+              <input type="text" id="modal-subcategory" list="modal-subs" />
+              <datalist id="modal-subs"></datalist>
+            </label>
+            <label class="field">
+              <span>tags</span>
+              <input type="text" id="modal-tags" placeholder="comma, separated, tags" />
+            </label>
+            <label class="field">
+              <span>color</span>
+              <span class="color-row">
+                <input type="checkbox" id="modal-color-on" />
+                <input type="color" id="modal-color" />
+                <input type="text" id="modal-color-hex" class="mono" />
+              </span>
+            </label>
+          </div>
+        </div>
+        <footer class="modal-foot">
+          <button id="modal-delete" class="danger">delete</button>
+          <span class="grow"></span>
+          <button data-close="1">cancel</button>
+          <button id="modal-save" class="accent">save</button>
+        </footer>
+      </div>
+    </div>
+
+    <script type="module" src="js/main.js"></script>
+  </body>
+</html>
