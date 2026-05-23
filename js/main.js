@@ -20,6 +20,8 @@ import {
   initEditModal,
   initTopBar,
   initUploadVisuals,
+  initGridToggle,
+  initMobileUI,
   DRAG_MIME,
 } from "./ui.js";
 
@@ -43,9 +45,12 @@ import {
   initStatusBar();
   initTopBar({ onExport: handleExport });
   initUploadVisuals();
+  initGridToggle();
+  initMobileUI();
 
   // 3. Wire IO.
   initFileInput();
+  initImport();
   initDragDrop();
   initClipboardPaste();
   initKeyboard();
@@ -111,21 +116,85 @@ function handleExport() {
 // =============================================================================
 
 function initFileInput() {
-  const input = document.getElementById("upload-input");
-  const drop = document.getElementById("upload-drop");
-  drop.addEventListener("click", (e) => {
-    // The drop area itself triggers the file picker. Without this, the
-    // hidden <input> isn't reachable.
-    if (e.target.tagName !== "INPUT") {
-      input.click();
-    }
+  // Both inputs (gallery picker + camera) sit inside <label for=""> wrappers,
+  // so a tap on the label natively triggers the picker on every platform —
+  // including iOS Safari, where programmatic .click() on a [hidden] input is
+  // unreliable. We just listen for `change` here.
+  const wire = (id) => {
+    const el = document.getElementById(id);
+    if (!el) return;
+    el.addEventListener("change", async (e) => {
+      if (e.target.files?.length) {
+        await handleFiles(Array.from(e.target.files));
+        e.target.value = "";
+      }
+    });
+  };
+  wire("upload-input");
+}
+
+// =============================================================================
+// IMPORT ($ import.png) — drop a PNG/JPG onto the canvas as-is (no bg removal),
+// centered and scaled to fit, sitting behind wardrobe items as a backdrop.
+// =============================================================================
+
+function initImport() {
+  const btn = document.getElementById("btn-import");
+  if (!btn) return;
+  const inp = document.createElement("input");
+  inp.type = "file";
+  inp.accept = "image/png,image/jpeg,image/webp";
+  inp.addEventListener("change", async () => {
+    const file = inp.files?.[0];
+    inp.value = "";
+    if (file) await importBackdrop(file);
   });
-  input.addEventListener("change", async (e) => {
-    if (e.target.files?.length) {
-      await handleFiles(Array.from(e.target.files));
-      e.target.value = "";
-    }
-  });
+  btn.addEventListener("click", () => inp.click());
+}
+
+async function importBackdrop(file) {
+  if (!file.type.startsWith("image/")) {
+    alert("import.png ждёт картинку (png / jpg / webp).");
+    return;
+  }
+  update({ processing: true, progress: `importing · ${file.name}` });
+  try {
+    const r = await processFile(file, { bgMode: "off" });
+    const item = {
+      id: uid(),
+      name: file.name.replace(/\.[^.]+$/, "") || "import",
+      category: "uncategorized",
+      subcategory: "",
+      tags: [],
+      color: r.color,
+      cutoutDataUrl: r.dataUrl,
+      width: r.width,
+      height: r.height,
+      hasBgRemoved: false,
+      bgMethod: "none",
+      createdAt: Date.now(),
+    };
+    await addItem(item);
+    const fit = Math.min(CANVAS_W / r.width, CANVAS_H / r.height);
+    addLayer({
+      id: uid(),
+      itemId: item.id,
+      x: SPINE_X,
+      y: CANVAS_H / 2,
+      scale: fit,
+      rotation: 0,
+      zIndex: 0,        // behind wardrobe layers (their z starts at 20)
+      clip: "full",
+      opacity: 1,
+      hidden: false,
+    });
+    update({ showGrid: false });
+  } catch (e) {
+    console.error("import failed:", e);
+    alert("Не удалось импортировать: " + (e.message || e));
+  } finally {
+    update({ processing: false, progress: "" });
+  }
 }
 
 function initDragDrop() {
@@ -283,6 +352,3 @@ async function handleFiles(files) {
 
 // Expose for ad-hoc devtools poking.
 window.wardrobe = { getState };
-
-// Suppress unused-warning for the imported W constant.
-void CANVAS_W;

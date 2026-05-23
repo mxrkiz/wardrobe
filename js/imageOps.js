@@ -113,17 +113,28 @@ export function dominantColor(img) {
 }
 
 // ---- Mono-background detection ---------------------------------------------
-// Two-stage decision:
-//   (a) all four corners must agree within `cornerSpread`. Bails on any noisy
-//       or partly-transparent corner.
-//   (b) the *interior* of the image must be clearly different from the bg
-//       (median patch distance from bg ≥ `interiorMinDist`). This rejects
-//       the pathological "white shirt on white seamless" case where a naive
-//       flood-fill would happily eat the whole foreground.
-// Returns the avg corner colour, or null if either check fails.
+// Strategy:
+//   1. Sample many points along all four edges (a 5px inset, so we ignore any
+//      JPEG fringe right at the boundary) using small 3x3 patches.
+//   2. Pick the per-channel median across all edge samples as the bg seed.
+//      Median is robust to a few outliers — e.g. the soft drop-shadow that
+//      most catalog photos have along the bottom doesn't shift the answer.
+//   3. Reject if too many edge samples diverge from the median (it's not a
+//      uniform background, it's a real scene).
+//   4. Reject if the interior is mostly bg-coloured — that's the "white shirt
+//      on white seamless" trap where flood-fill would eat the subject. We
+//      require at least a few interior samples to clearly differ from bg.
+// Returns the bg colour, or null if any check fails.
 export function detectMonoBg(
   img,
-  { cornerSpread = 20, interiorMinDist = 25 } = {},
+  {
+    edgeSamplesPerSide = 9,    // → 4*9 = 36 edge samples
+    edgeInset = 5,             // pixels from the edge to avoid JPEG fringe
+    bgMaxSpread = 32,          // max per-sample distance from median seed
+    bgRequiredFrac = 0.7,      // ≥70% of edge samples must look like bg
+    interiorFgMinCount = 2,    // ≥N interior samples must be clearly fg
+    interiorFgMinDist = 28,    // … and "clearly" means this colour distance
+  } = {},
 ) {
   const c = document.createElement("canvas");
   const w = img.naturalWidth, h = img.naturalHeight;
@@ -147,51 +158,57 @@ export function detectMonoBg(
     return { r: r / n, g: g / n, b: b / n, a: a / n };
   };
 
-  // --- (a) corner agreement ---
-  const corners = [
-    sample(0, 0),
-    sample(w - 1, 0),
-    sample(0, h - 1),
-    sample(w - 1, h - 1),
-  ];
-  if (corners.some((c) => c.a < 200)) return null; // already cut out
-
-  let maxDist = 0;
-  for (let i = 0; i < corners.length; i++) {
-    for (let j = i + 1; j < corners.length; j++) {
-      const dr = corners[i].r - corners[j].r;
-      const dg = corners[i].g - corners[j].g;
-      const db = corners[i].b - corners[j].b;
-      const dist = Math.sqrt(dr * dr + dg * dg + db * db);
-      if (dist > maxDist) maxDist = dist;
-    }
+  // --- 1. collect edge samples --------------------------------------------
+  const inset = Math.min(edgeInset, Math.floor(Math.min(w, h) / 8));
+  const N = edgeSamplesPerSide;
+  const edgeSamples = [];
+  for (let i = 0; i < N; i++) {
+    const t = (i + 0.5) / N;                              // (0..1)
+    const x = Math.round(inset + t * (w - 1 - 2 * inset));
+    const y = Math.round(inset + t * (h - 1 - 2 * inset));
+    edgeSamples.push(sample(x, inset));                   // top
+    edgeSamples.push(sample(x, h - 1 - inset));           // bottom
+    edgeSamples.push(sample(inset, y));                   // left
+    edgeSamples.push(sample(w - 1 - inset, y));           // right
   }
-  if (maxDist > cornerSpread) return null;
 
-  const bg = corners.reduce(
-    (a, c) => ({ r: a.r + c.r, g: a.g + c.g, b: a.b + c.b }),
-    { r: 0, g: 0, b: 0 },
-  );
-  bg.r /= 4; bg.g /= 4; bg.b /= 4;
+  // Reject if any sample has low alpha — image is already cut out.
+  if (edgeSamples.some((s) => s.a < 200)) return null;
 
-  // --- (b) interior must be distinguishable from bg ---
-  // 3x3 grid of interior samples (skipping the outer border).
-  const dists = [];
-  for (let yi = 1; yi <= 3; yi++) {
-    for (let xi = 1; xi <= 3; xi++) {
-      const x = Math.floor((w * xi) / 4);
-      const y = Math.floor((h * yi) / 4);
+  // --- 2. per-channel median = robust bg seed -----------------------------
+  const median = (arr) => {
+    const a = [...arr].sort((x, y) => x - y);
+    return a[Math.floor(a.length / 2)];
+  };
+  const bg = {
+    r: median(edgeSamples.map((s) => s.r)),
+    g: median(edgeSamples.map((s) => s.g)),
+    b: median(edgeSamples.map((s) => s.b)),
+  };
+
+  // --- 3. uniformity: enough edge samples close to bg? --------------------
+  let bgLike = 0;
+  for (const s of edgeSamples) {
+    const dr = s.r - bg.r, dg = s.g - bg.g, db = s.b - bg.b;
+    if (Math.sqrt(dr * dr + dg * dg + db * db) < bgMaxSpread) bgLike++;
+  }
+  if (bgLike / edgeSamples.length < bgRequiredFrac) return null;
+
+  // --- 4. interior must contain real foreground ---------------------------
+  // 5x5 grid of interior samples.
+  let fgCount = 0;
+  for (let yi = 1; yi <= 5; yi++) {
+    for (let xi = 1; xi <= 5; xi++) {
+      const x = Math.floor((w * xi) / 6);
+      const y = Math.floor((h * yi) / 6);
       const s = sample(x, y);
       const dr = s.r - bg.r, dg = s.g - bg.g, db = s.b - bg.b;
-      dists.push(Math.sqrt(dr * dr + dg * dg + db * db));
+      if (Math.sqrt(dr * dr + dg * dg + db * db) > interiorFgMinDist) fgCount++;
     }
   }
-  dists.sort((a, b) => a - b);
-  const median = dists[Math.floor(dists.length / 2)];
-
-  if (median < interiorMinDist) {
-    // Interior is bg-coloured (e.g. white shirt on white). Mono-fill would
-    // eat the foreground. Refuse — caller will fall back to ML.
+  if (fgCount < interiorFgMinCount) {
+    // foreground indistinguishable from bg (e.g. white shirt on white) →
+    // mono-fill would eat the subject. Refuse, let ML take over.
     return null;
   }
 
@@ -207,7 +224,12 @@ export function detectMonoBg(
 // Pixels not connected to the corners stay fully opaque, so a white logo
 // inside a coloured shirt isn't accidentally erased.
 export function removeMonoBg(img, bgColor, opts = {}) {
-  const { tolerance = 22, feather = 14, fillHoles = false } = opts;
+  // tolerance=14, feather=10: tight enough that a bright-but-not-bg pixel
+  // (e.g. a white sneaker sole on light grey seamless) isn't bridged into the
+  // bg through a soft drop-shadow — the shadow's distance from bg (~25..40)
+  // exceeds tolerance+feather=24, so flood-fill stops at the shadow ring and
+  // anything beyond it (the actual subject) stays opaque.
+  const { tolerance = 14, feather = 10, fillHoles = false } = opts;
   const w = img.naturalWidth, h = img.naturalHeight;
 
   const c = document.createElement("canvas");
@@ -286,6 +308,75 @@ export function removeMonoBg(img, bgColor, opts = {}) {
   return c.toDataURL("image/png");
 }
 
+// ---- Close interior holes in an ML mask ------------------------------------
+// The ISNet model occasionally erases a region in the INTERIOR of a solid
+// subject — a dark tattoo on an arm reads as background/shadow and gets punched
+// out, so on the white canvas plate it looks "painted white". Real background
+// is always connected to the image border, so we flood-fill transparency inward
+// from the edges: any transparent pixel reachable from a border is genuine bg
+// and stays cut; any transparent pixel NOT reachable is an interior hole and is
+// restored to opaque, taking its RGB from the original photo so the recovered
+// region keeps its true colour.
+export function closeAlphaHoles(cutoutImg, originalImg, { alphaThreshold = 16 } = {}) {
+  const w = cutoutImg.naturalWidth, h = cutoutImg.naturalHeight;
+  if (w < 3 || h < 3) {
+    const c0 = document.createElement("canvas");
+    c0.width = w; c0.height = h;
+    c0.getContext("2d").drawImage(cutoutImg, 0, 0);
+    return c0.toDataURL("image/png");
+  }
+
+  const c = document.createElement("canvas");
+  c.width = w; c.height = h;
+  const ctx = c.getContext("2d", { willReadFrequently: true });
+  ctx.drawImage(cutoutImg, 0, 0);
+  const id = ctx.getImageData(0, 0, w, h);
+  const data = id.data;
+  const N = w * h;
+
+  // Original pixels (matched to cutout size) — source for recovered colour.
+  const oc = document.createElement("canvas");
+  oc.width = w; oc.height = h;
+  const octx = oc.getContext("2d", { willReadFrequently: true });
+  octx.drawImage(originalImg, 0, 0, w, h);
+  const odata = octx.getImageData(0, 0, w, h).data;
+
+  // Flood-fill "outside" from the border through transparent pixels only.
+  const outside = new Uint8Array(N);
+  const stack = [];
+  const pushIf = (i) => {
+    if (!outside[i] && data[i * 4 + 3] < alphaThreshold) {
+      outside[i] = 1;
+      stack.push(i);
+    }
+  };
+  for (let x = 0; x < w; x++) { pushIf(x); pushIf((h - 1) * w + x); }
+  for (let y = 0; y < h; y++) { pushIf(y * w); pushIf(y * w + w - 1); }
+  while (stack.length) {
+    const idx = stack.pop();
+    const x = idx % w;
+    const y = (idx - x) / w;
+    if (x > 0)     pushIf(idx - 1);
+    if (x < w - 1) pushIf(idx + 1);
+    if (y > 0)     pushIf(idx - w);
+    if (y < h - 1) pushIf(idx + w);
+  }
+
+  // Restore interior holes (transparent but not reachable from the border).
+  for (let i = 0; i < N; i++) {
+    const j = i * 4;
+    if (data[j + 3] < alphaThreshold && !outside[i]) {
+      data[j]     = odata[j];
+      data[j + 1] = odata[j + 1];
+      data[j + 2] = odata[j + 2];
+      data[j + 3] = 255;
+    }
+  }
+
+  ctx.putImageData(id, 0, 0);
+  return c.toDataURL("image/png");
+}
+
 // ---- Full pipeline ---------------------------------------------------------
 
 export async function processFile(file, opts = {}) {
@@ -334,7 +425,10 @@ export async function processFile(file, opts = {}) {
         const url = URL.createObjectURL(cutoutBlob);
         try {
           const cutout = await loadImage(url);
-          const trimmed = trimTransparent(cutout);
+          // Recover any interior holes the model punched into a solid subject
+          // (e.g. a dark tattoo) before trimming away transparent borders.
+          const closed = await loadImage(closeAlphaHoles(cutout, img));
+          const trimmed = trimTransparent(closed);
           const finalImg = await loadImage(trimmed.dataUrl);
           return {
             ...trimmed,

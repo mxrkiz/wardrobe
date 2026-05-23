@@ -20,6 +20,7 @@ let state = {
   uploadCategory: "uncategorized",
   bgMode: "auto",        // "auto" | "mono" | "ml" | "off"
   fillHoles: false,      // second flood-fill pass kills isolated bg regions
+  showGrid: true,        // canvas guides (spine + slot ticks + dot grid)
   processing: false,
   progress: "",
   bgStatus: { ready: false, error: null, probing: true },

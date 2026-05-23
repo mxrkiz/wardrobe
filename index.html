@@ -2,7 +2,7 @@
 <html lang="ru">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
     <title>wardrobe</title>
     <link rel="stylesheet" href="style.css" />
 
@@ -29,6 +29,7 @@
         <span class="sep">·</span>
         <span class="muted">local outfit editor</span>
         <span class="grow"></span>
+        <button id="btn-import" class="ghost">$ import.png</button>
         <button id="btn-export" class="ghost" disabled>$ export.png</button>
         <button id="btn-clear" class="ghost" disabled>$ clear</button>
       </header>
@@ -40,6 +41,13 @@
           <div class="pane-head">
             <span class="title">wardrobe</span>
             <span class="muted" id="item-count">0</span>
+            <span class="grow"></span>
+            <!-- grid on/off toggle. switch-style checkbox. -->
+            <label class="switch" title="show/hide canvas grid">
+              <input type="checkbox" id="toggle-grid" checked />
+              <span class="switch-track"><span class="switch-thumb"></span></span>
+              <span class="switch-label">grid</span>
+            </label>
           </div>
 
           <!-- upload block -->
@@ -64,9 +72,19 @@
                 <option value="1">fill (bag handles)</option>
               </select>
             </div>
-            <label class="upload-drop" id="upload-drop">
-              <input type="file" id="upload-input" accept="image/*" multiple hidden />
-              <span class="upload-hint">[ drop · paste · click ]</span>
+            <label class="upload-drop" id="upload-drop" for="upload-input">
+              <!--
+                visually-hidden (not [hidden]) — iOS Safari sometimes refuses to
+                open the file picker for [hidden] inputs (stripped from the a11y
+                tree). The label's for="" makes a tap a native label/input pair,
+                so iOS shows its standard Photo Library / Take Photo / Choose
+                File sheet.
+              -->
+              <input type="file" id="upload-input"
+                     accept="image/*,.heic,.heif"
+                     multiple class="vh-input" />
+              <span class="upload-cta">+ add items</span>
+              <span class="upload-sub">drag &middot; paste &middot; tap</span>
             </label>
           </div>
 
@@ -83,6 +101,9 @@
         <aside class="pane right">
           <div class="pane-head">
             <span class="title">inspector</span>
+            <span class="grow"></span>
+            <button class="pane-toggle" id="inspector-toggle"
+                    title="expand / collapse" aria-expanded="true">▾</button>
           </div>
           <div id="inspector" class="inspector">
             <p class="muted small">// select a layer on canvas</p>
@@ -107,7 +128,7 @@
         <span class="sep">·</span>
         <span class="status-item" id="status-items">items: 0</span>
         <span class="grow"></span>
-        <span class="muted">v0.2 · local-first · MIT</span>
+        <span class="muted">v0.3 · local-first · MIT</span>
       </footer>
     </div>
 
@@ -135,8 +156,19 @@
             </label>
             <label class="field">
               <span>subcategory</span>
-              <input type="text" id="modal-subcategory" list="modal-subs" />
-              <datalist id="modal-subs"></datalist>
+              <!--
+                Custom combobox. Plain <input> + a styled popup list, no native
+                <datalist> (which renders system-OS chrome and breaks the dark
+                theme). User can pick from the suggested list OR free-type a
+                brand-new subcategory.
+              -->
+              <span class="combo" id="modal-sub-combo">
+                <input type="text" id="modal-subcategory"
+                       autocomplete="off" spellcheck="false" />
+                <button type="button" class="combo-caret" id="modal-sub-caret"
+                        tabindex="-1" title="show suggestions">▾</button>
+                <div class="combo-pop" id="modal-sub-pop" role="listbox"></div>
+              </span>
             </label>
             <label class="field">
               <span>tags</span>

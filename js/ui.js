@@ -13,6 +13,7 @@ import {
   clearLayers,
   recategorizeItem,
 } from "./state.js";
+import { subscribeLivePreview } from "./canvas.js";
 
 // Custom mime used by the wardrobe-tree drag-and-drop. The window-level file
 // drop handler in main.js checks for this and skips, so internal drags don't
@@ -178,7 +179,7 @@ export function initWardrobeTree({ onPlace, onEdit }) {
       const isOpen = openSections.has(cat);
       const spec = CATEGORIES[cat];
       parts.push(`
-        <div class="tree-section ${isOpen ? "open" : ""}">
+        <div class="tree-section ${isOpen ? "open" : ""} ${count === 0 ? "empty" : ""}">
           <div class="tree-section-head" data-section="${escapeHtml(cat)}">
             <span class="chev">▶</span>
             <span>${escapeHtml(spec.label)}</span>
@@ -227,14 +228,65 @@ export function initWardrobeTree({ onPlace, onEdit }) {
 export function initInspector({ onEditItem }) {
   const root = document.getElementById("inspector");
 
+  // Cache for the currently-shown layer's "structural" signature. We only
+  // rebuild the DOM when this changes; for plain numeric updates (slider
+  // dragged on canvas or in the inspector itself) we just write into the
+  // existing input elements. Without this, every slider tick would wipe and
+  // re-create the slider DOM, breaking the user's drag.
+  let currentLayerId = null;
+  let currentSig = null;
+  let currentNumericSig = null;
+
+  // Element handles, refreshed after each full render.
+  const ctl = { scale: null, rotate: null, opacity: null };
+
   function render(st) {
     const layer = st.layers.find((l) => l.id === st.selectedLayerId);
     const item = layer ? st.items.find((i) => i.id === layer.itemId) : null;
+
     if (!layer || !item) {
-      root.innerHTML = `<p class="muted small">// select a layer on canvas</p>`;
+      if (currentLayerId !== null) {
+        root.innerHTML = `<p class="muted small">// select a layer on canvas</p>`;
+        currentLayerId = null;
+        currentSig = null;
+        currentNumericSig = null;
+        ctl.scale = ctl.rotate = ctl.opacity = null;
+      }
       return;
     }
 
+    // Structural signature: anything that affects rendered DOM other than the
+    // 3 slider values. Includes layer.id (selection changed), clip/hidden,
+    // and item meta that's mirrored in the header.
+    const sig = [
+      layer.id,
+      layer.clip,
+      layer.hidden,
+      item.name,
+      item.color,
+      item.category,
+      item.subcategory,
+      item.cutoutDataUrl.length, // proxy for "image was reprocessed"
+    ].join("|");
+
+    if (sig !== currentSig) {
+      fullRender(layer, item);
+      currentSig = sig;
+      currentLayerId = layer.id;
+    }
+
+    // Always update numeric values (with focus guard so we don't fight the
+    // user's own input).
+    const numSig = `${layer.scale}|${layer.rotation}|${layer.opacity}`;
+    if (numSig !== currentNumericSig) {
+      writeNumeric("scale", layer.scale);
+      writeNumeric("rotate", layer.rotation);
+      writeNumeric("opacity", Math.round(layer.opacity * 100));
+      currentNumericSig = numSig;
+    }
+  }
+
+  function fullRender(layer, item) {
     const cat = CATEGORIES[item.category];
     const sub = item.subcategory ? ` · ${escapeHtml(item.subcategory)}` : "";
 
@@ -252,8 +304,8 @@ export function initInspector({ onEditItem }) {
         }
       </div>
 
-      ${control("scale", layer.scale, 0.05, 3, 0.01, "×", 1)}
-      ${control("rotate", layer.rotation, -180, 180, 1, "°", 0)}
+      ${control("scale", layer.scale, 0.05, 3, 0.001, "×", 1)}
+      ${control("rotate", layer.rotation, -180, 180, 0.5, "°", 0)}
       ${control("opacity", Math.round(layer.opacity * 100), 0, 100, 1, "%", 100)}
 
       <div class="btn-group">
@@ -277,39 +329,47 @@ export function initInspector({ onEditItem }) {
       </div>
     `;
 
-    // ---- wire up events on the current render
-    root.querySelectorAll(".control").forEach((row) => {
-      const key = row.dataset.key;
-      const range = row.querySelector('input[type="range"]');
-      const num = row.querySelector(".num");
-      const reset = row.querySelector(".reset");
+    // Cache DOM references for fast updates from live-preview / state.
+    ctl.scale = grabCtl("scale");
+    ctl.rotate = grabCtl("rotate");
+    ctl.opacity = grabCtl("opacity");
+    // Reset numeric sig so the first state-driven render writes initial values.
+    currentNumericSig = null;
 
+    // ---- wire control events on the new DOM
+    [
+      { key: "scale", min: 0.05, max: 3, fn: (v) => ({ scale: v }) },
+      { key: "rotate", min: -180, max: 180, fn: (v) => ({ rotation: v }) },
+      { key: "opacity", min: 0, max: 100, fn: (v) => ({ opacity: v / 100 }) },
+    ].forEach(({ key, min, max, fn }) => {
+      const c = ctl[key];
+      if (!c) return;
       const apply = (raw) => {
         let v = Number(raw);
         if (Number.isNaN(v)) return;
-        if (key === "scale") {
-          v = clamp(v, 0.05, 3);
-          updateLayer(layer.id, { scale: v });
-        } else if (key === "rotate") {
-          v = clamp(v, -180, 180);
-          updateLayer(layer.id, { rotation: v });
-        } else {
-          v = clamp(v, 0, 100);
-          updateLayer(layer.id, { opacity: v / 100 });
-        }
+        v = clamp(v, min, max);
+        updateLayer(layer.id, fn(v));
       };
-
-      range.addEventListener("input", (e) => apply(e.target.value));
-      num.addEventListener("change", (e) => apply(e.target.value));
-      num.addEventListener("keydown", (e) => {
-        if (e.key === "Enter") apply(e.target.value);
+      c.range.addEventListener("input", (e) => apply(e.target.value));
+      c.num.addEventListener("input", (e) => apply(e.target.value));
+      c.num.addEventListener("keydown", (e) => {
+        if (e.key === "Enter") {
+          apply(e.target.value);
+          e.target.blur();
+        }
       });
-      reset.addEventListener("click", () => {
+      c.reset.addEventListener("click", () => {
         if (key === "scale") updateLayer(layer.id, { scale: 1 });
         else if (key === "rotate") updateLayer(layer.id, { rotation: 0 });
         else updateLayer(layer.id, { opacity: 1 });
       });
     });
+
+    // Double-click the "rotate" label → snap rotation back to 0.
+    const rotateLabel = root.querySelector('.control[data-key="rotate"] > span');
+    rotateLabel?.addEventListener("dblclick", () =>
+      updateLayer(layer.id, { rotation: 0 }),
+    );
 
     root.querySelectorAll("[data-clip]").forEach((b) => {
       b.addEventListener("click", () =>
@@ -318,9 +378,11 @@ export function initInspector({ onEditItem }) {
     });
     root.querySelectorAll("[data-z]").forEach((b) => {
       b.addEventListener("click", () => {
+        const cur = getState().layers.find((l) => l.id === layer.id);
+        if (!cur) return;
         const delta = parseInt(b.dataset.z, 10);
         updateLayer(layer.id, {
-          zIndex: Math.max(0, layer.zIndex + delta),
+          zIndex: Math.max(0, cur.zIndex + delta),
         });
       });
     });
@@ -328,20 +390,46 @@ export function initInspector({ onEditItem }) {
     if (editBtn) editBtn.addEventListener("click", () => onEditItem(item.id));
     const toggleBtn = root.querySelector("[data-toggle-hidden]");
     if (toggleBtn)
-      toggleBtn.addEventListener("click", () =>
-        updateLayer(layer.id, { hidden: !layer.hidden }),
-      );
+      toggleBtn.addEventListener("click", () => {
+        const cur = getState().layers.find((l) => l.id === layer.id);
+        if (cur) updateLayer(layer.id, { hidden: !cur.hidden });
+      });
     const rmBtn = root.querySelector("[data-remove]");
     if (rmBtn) rmBtn.addEventListener("click", () => removeLayer(layer.id));
+  }
+
+  function grabCtl(key) {
+    const row = root.querySelector(`.control[data-key="${key}"]`);
+    if (!row) return null;
+    return {
+      range: row.querySelector('input[type="range"]'),
+      num: row.querySelector(".num"),
+      reset: row.querySelector(".reset"),
+    };
+  }
+
+  // Write a value into the slider + number input, skipping whichever is
+  // currently focused (the user is typing/dragging it).
+  function writeNumeric(key, value) {
+    const c = ctl[key];
+    if (!c) return;
+    const display =
+      key === "opacity"
+        ? String(Math.round(value))
+        : key === "rotate"
+          ? value.toFixed(1)
+          : value.toFixed(3);
+    if (document.activeElement !== c.range) c.range.value = String(value);
+    if (document.activeElement !== c.num) c.num.value = display;
   }
 
   function control(key, value, min, max, step, unit, def) {
     const display =
       key === "opacity"
-        ? Math.round(value)
+        ? String(Math.round(value))
         : key === "rotate"
-          ? Math.round(value)
-          : value.toFixed(2);
+          ? value.toFixed(1)
+          : value.toFixed(3);
     return `
       <div class="control" data-key="${escapeHtml(key)}">
         <span>${escapeHtml(key)}</span>
@@ -355,6 +443,16 @@ export function initInspector({ onEditItem }) {
       </div>
     `;
   }
+
+  // ---- Live preview from canvas drag/transform --------------------------
+  // Canvas fires {scale, rotation, x, y} during drag/transform. We mirror
+  // them straight into the input visuals without going through state — the
+  // commit to state happens at dragend/transformend.
+  subscribeLivePreview((layerId, props) => {
+    if (layerId !== currentLayerId) return;
+    if (props.scale != null) writeNumeric("scale", props.scale);
+    if (props.rotation != null) writeNumeric("rotate", props.rotation);
+  });
 
   subscribe(render);
 }
@@ -470,7 +568,9 @@ export function initEditModal() {
   const fName = document.getElementById("modal-name");
   const fCategory = document.getElementById("modal-category");
   const fSub = document.getElementById("modal-subcategory");
-  const fSubs = document.getElementById("modal-subs");
+  const fSubCombo = document.getElementById("modal-sub-combo");
+  const fSubCaret = document.getElementById("modal-sub-caret");
+  const fSubPop = document.getElementById("modal-sub-pop");
   const fTags = document.getElementById("modal-tags");
   const fColorOn = document.getElementById("modal-color-on");
   const fColor = document.getElementById("modal-color");
@@ -483,12 +583,57 @@ export function initEditModal() {
     (c) => `<option value="${c}">${escapeHtml(CATEGORIES[c].label)}</option>`,
   ).join("");
 
-  const refreshSubOptions = () => {
-    fSubs.innerHTML = CATEGORIES[fCategory.value].subcategories
-      .map((s) => `<option value="${escapeHtml(s)}"></option>`)
-      .join("");
+  // ---- Subcategory combobox ------------------------------------------------
+  // Filtered popup of the category's suggestions, plus free-typing of a
+  // brand-new value. Replaces the native <datalist> so the popup honours the
+  // dark theme on every browser.
+  let subOptions = [];
+  function renderSubPop() {
+    const q = fSub.value.toLowerCase().trim();
+    const list = subOptions.filter((o) => o.toLowerCase().includes(q));
+    fSubPop.innerHTML = list.length
+      ? list
+          .map(
+            (o) =>
+              `<div class="combo-item${
+                o.toLowerCase() === q ? " selected" : ""
+              }" data-val="${escapeHtml(o)}">${escapeHtml(o)}</div>`,
+          )
+          .join("")
+      : `<div class="combo-empty">// no match — type your own</div>`;
+  }
+  const openSubPop = () => {
+    renderSubPop();
+    fSubCombo.classList.add("open");
   };
-  fCategory.addEventListener("change", refreshSubOptions);
+  const closeSubPop = () => fSubCombo.classList.remove("open");
+  const setSubOptions = (opts) => {
+    subOptions = opts || [];
+    if (fSubCombo.classList.contains("open")) renderSubPop();
+  };
+
+  fSub.addEventListener("focus", openSubPop);
+  fSub.addEventListener("input", openSubPop);
+  fSubCaret.addEventListener("click", () => {
+    if (fSubCombo.classList.contains("open")) {
+      closeSubPop();
+    } else {
+      fSub.focus();
+      openSubPop();
+    }
+  });
+  fSubPop.addEventListener("click", (e) => {
+    const item = e.target.closest(".combo-item");
+    if (!item) return;
+    fSub.value = item.dataset.val;
+    closeSubPop();
+  });
+  document.addEventListener("click", (e) => {
+    if (!fSubCombo.contains(e.target)) closeSubPop();
+  });
+  fCategory.addEventListener("change", () =>
+    setSubOptions(CATEGORIES[fCategory.value].subcategories),
+  );
 
   // color sync
   fColor.addEventListener("input", () => {
@@ -529,7 +674,8 @@ export function initEditModal() {
     previewMeta.textContent = `${it.width}×${it.height} · ${bgLabel}`;
     fName.value = it.name;
     fCategory.value = it.category;
-    refreshSubOptions();
+    setSubOptions(CATEGORIES[it.category].subcategories);
+    closeSubPop();
     fSub.value = it.subcategory ?? "";
     fTags.value = it.tags.join(", ");
     const hasColor = !!it.color;
@@ -638,4 +784,56 @@ export function initUploadVisuals() {
       bar = null;
     }
   });
+}
+
+// =============================================================================
+// GRID TOGGLE (left pane head switch)
+// =============================================================================
+
+export function initGridToggle() {
+  const cb = document.getElementById("toggle-grid");
+  if (!cb) return;
+  cb.addEventListener("change", (e) => update({ showGrid: e.target.checked }));
+  subscribe((st) => {
+    if (cb.checked !== st.showGrid) cb.checked = st.showGrid;
+  });
+}
+
+// =============================================================================
+// MOBILE UI — collapsible bottom inspector
+// =============================================================================
+// On phones the right pane sits at the bottom of the vertical stack. It starts
+// collapsed (just its header) so the canvas owns the screen, auto-expands when
+// the user selects a layer, and can be toggled by hand. On desktop the
+// `collapsed` class is ignored by the stylesheet, so this is a no-op there.
+
+export function initMobileUI() {
+  const right = document.querySelector(".pane.right");
+  const toggle = document.getElementById("inspector-toggle");
+  if (!right || !toggle) return;
+
+  const mql = window.matchMedia("(max-width: 720px)");
+  const setCollapsed = (v) => {
+    right.classList.toggle("collapsed", v);
+    toggle.setAttribute("aria-expanded", String(!v));
+    toggle.textContent = v ? "▴" : "▾";
+  };
+
+  if (mql.matches) setCollapsed(true);
+
+  toggle.addEventListener("click", () =>
+    setCollapsed(!right.classList.contains("collapsed")),
+  );
+
+  // Auto-expand when a layer becomes selected on mobile.
+  let prevSel = null;
+  subscribe((st) => {
+    if (mql.matches && st.selectedLayerId && st.selectedLayerId !== prevSel) {
+      setCollapsed(false);
+    }
+    prevSel = st.selectedLayerId;
+  });
+
+  // Reset to a sane default when crossing the breakpoint.
+  mql.addEventListener?.("change", (e) => setCollapsed(e.matches));
 }
