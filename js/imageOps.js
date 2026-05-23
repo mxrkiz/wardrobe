@@ -207,7 +207,7 @@ export function detectMonoBg(
 // Pixels not connected to the corners stay fully opaque, so a white logo
 // inside a coloured shirt isn't accidentally erased.
 export function removeMonoBg(img, bgColor, opts = {}) {
-  const { tolerance = 22, feather = 14 } = opts;
+  const { tolerance = 22, feather = 14, fillHoles = false } = opts;
   const w = img.naturalWidth, h = img.naturalHeight;
 
   const c = document.createElement("canvas");
@@ -263,13 +263,34 @@ export function removeMonoBg(img, bgColor, opts = {}) {
     }
   }
 
+  // Optional second pass: kill isolated bg-coloured regions (e.g. the empty
+  // space between a bag's handles). Same colour-distance threshold but no
+  // connectivity requirement. Will also wipe legitimate light prints/logos —
+  // hence opt-in.
+  if (fillHoles) {
+    for (let i = 0; i < N; i++) {
+      if (bgConnected[i]) continue; // already handled above
+      const dd = dist[i];
+      if (dd < tolerance) {
+        data[i * 4 + 3] = 0;
+      } else if (dd < tolerance + feather) {
+        const t = (dd - tolerance) / feather;
+        const cur = data[i * 4 + 3];
+        const target = Math.round(255 * Math.min(1, Math.max(0, t)));
+        if (target < cur) data[i * 4 + 3] = target;
+      }
+    }
+  }
+
   ctx.putImageData(id, 0, 0);
   return c.toDataURL("image/png");
 }
 
 // ---- Full pipeline ---------------------------------------------------------
 
-export async function processFile(file, bgMode = "auto") {
+export async function processFile(file, opts = {}) {
+  const { bgMode = "auto", fillHoles = false } = opts;
+
   // 1. Decode the file once. We need the HTMLImageElement for the mono-bg
   //    detector regardless of which path we take.
   const objUrl = URL.createObjectURL(file);
@@ -288,7 +309,7 @@ export async function processFile(file, bgMode = "auto") {
     const bg = detectMonoBg(img);
     if (bg) {
       try {
-        const dataUrl = removeMonoBg(img, bg);
+        const dataUrl = removeMonoBg(img, bg, { fillHoles });
         const cutout = await loadImage(dataUrl);
         const trimmed = trimTransparent(cutout);
         const finalImg = await loadImage(trimmed.dataUrl);

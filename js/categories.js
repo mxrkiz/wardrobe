@@ -5,6 +5,14 @@
 // which covers a t-shirt — without manual user reordering.
 
 export const CATEGORIES = {
+  uncategorized: {
+    label: "uncategorized",
+    relY: 0.5,
+    targetH: 0.20,
+    z: 100,
+    order: -1,
+    subcategories: [],
+  },
   hat: {
     label: "hat",
     relY: 0.07,

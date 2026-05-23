@@ -20,6 +20,7 @@ import {
   initEditModal,
   initTopBar,
   initUploadVisuals,
+  DRAG_MIME,
 } from "./ui.js";
 
 // =============================================================================
@@ -131,9 +132,16 @@ function initDragDrop() {
   // Prevent the browser from navigating to the dropped item.
   window.addEventListener("dragover", (e) => e.preventDefault());
   window.addEventListener("drop", async (e) => {
-    e.preventDefault();
     const dt = e.dataTransfer;
     if (!dt) return;
+
+    // Internal wardrobe-tree drag (recategorize). The tree's own drop handler
+    // takes care of it; we just bail so we don't try to "upload" the item.
+    if (dt.types && Array.from(dt.types).includes(DRAG_MIME)) {
+      return;
+    }
+
+    e.preventDefault();
 
     // Case 1 — real files. The happy path.
     if (dt.files && dt.files.length > 0) {
@@ -244,7 +252,10 @@ async function handleFiles(files) {
         processing: true,
         progress: `processing ${i + 1}/${files.length} · ${f.name}`,
       });
-      const r = await processFile(f, getState().bgMode);
+      const r = await processFile(f, {
+        bgMode: getState().bgMode,
+        fillHoles: getState().fillHoles,
+      });
       const item = {
         id: uid(),
         name: f.name.replace(/\.[^.]+$/, "") || "image",

@@ -1,6 +1,5 @@
 /* ============================================================================
    wardrobe — developer-minimalist, terminal-inspired theme.
-   Single CSS file. Dark by default. Mono everywhere. Subtle green accent.
    ============================================================================ */
 
 :root {
@@ -77,8 +76,19 @@ body {
    ============================================================================ */
 .grid {
   display: grid;
-  grid-template-columns: 300px 1fr 320px;
+  grid-template-columns: minmax(220px, 20vw) 1fr minmax(240px, 22vw);
   overflow: hidden;
+}
+@media (max-width: 1200px) {
+  .grid { grid-template-columns: 220px 1fr 240px; }
+}
+@media (max-width: 900px) {
+  .grid { grid-template-columns: 180px 1fr 200px; }
+  body  { font-size: 11.5px; }
+}
+@media (max-width: 720px) {
+  .grid { grid-template-columns: 160px 1fr 180px; }
+  body  { font-size: 11px; }
 }
 .pane {
   display: flex;
@@ -89,7 +99,16 @@ body {
 }
 .pane.left   { border-right: 1px solid var(--border); }
 .pane.right  { border-left:  1px solid var(--border); }
-.pane.center { background: var(--bg); overflow: auto; padding: 18px; align-items: center; }
+.pane.center {
+  background: var(--bg);
+  overflow: auto;
+  padding: 18px;
+  align-items: center;
+  justify-content: flex-start;
+}
+@media (max-width: 900px) {
+  .pane.center { padding: 10px; }
+}
 .pane-head {
   display: flex;
   align-items: center;
@@ -316,6 +335,20 @@ input[type="checkbox"] {
 
 .thumb-wrap {
   position: relative;
+  cursor: grab;
+}
+.thumb-wrap:active { cursor: grabbing; }
+.thumb-wrap.dragging { opacity: 0.4; }
+
+/* Highlighted drop target while another thumb is being dragged over a section */
+.tree-section.drop-target > .tree-section-head {
+  background: rgba(63, 185, 80, 0.10);
+  color: var(--accent);
+}
+.tree-section.drop-target > .tree-items {
+  background: rgba(63, 185, 80, 0.04);
+  outline: 1px dashed rgba(63, 185, 80, 0.4);
+  outline-offset: -2px;
 }
 .thumb {
   width: 100%;
@@ -382,6 +415,10 @@ input[type="checkbox"] {
     0 4px 20px rgba(0, 0, 0, 0.4);
   overflow: hidden;
   position: relative;
+  /* Fluid: width fills available space (capped to 640 logical px = full quality).
+     Height comes from canvas.js fit-to-host. We also cap by viewport so the
+     canvas never spills below the status bar on shallow windows. */
+  width: min(100%, 640px);
 }
 .canvas-host::before {
   /* corner crosshair marks — terminal feel */

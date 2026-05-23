@@ -57,6 +57,13 @@
                 <option value="off">off · keep original</option>
               </select>
             </div>
+            <div class="upload-row">
+              <label class="upload-label" for="upload-holes">holes</label>
+              <select id="upload-holes" title="kill isolated bg regions (bag handles etc) — wipes light logos too">
+                <option value="0">keep (logos safe)</option>
+                <option value="1">fill (bag handles)</option>
+              </select>
+            </div>
             <label class="upload-drop" id="upload-drop">
               <input type="file" id="upload-input" accept="image/*" multiple hidden />
               <span class="upload-hint">[ drop · paste · click ]</span>
@@ -100,7 +107,7 @@
         <span class="sep">·</span>
         <span class="status-item" id="status-items">items: 0</span>
         <span class="grow"></span>
-        <span class="muted">v0.3 · local-first · MIT</span>
+        <span class="muted">v0.2 · local-first · MIT</span>
       </footer>
     </div>
 

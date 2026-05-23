@@ -17,8 +17,9 @@ let state = {
   layers: [],           // CanvasLayer[]
   selectedLayerId: null,
   editingItemId: null,
-  uploadCategory: "top",
+  uploadCategory: "uncategorized",
   bgMode: "auto",        // "auto" | "mono" | "ml" | "off"
+  fillHoles: false,      // second flood-fill pass kills isolated bg regions
   processing: false,
   progress: "",
   bgStatus: { ready: false, error: null, probing: true },
@@ -92,6 +93,17 @@ export async function addItem(item) {
 export async function saveItem(item) {
   await putItem(item);
   update({ items: state.items.map((i) => (i.id === item.id ? item : i)) });
+}
+
+// Move an item to a different category. Layers on the canvas keep their
+// current position — recategorize only changes meta. New layers spawned
+// from the item afterwards use the new category's spine slot.
+export async function recategorizeItem(id, newCategory) {
+  const it = state.items.find((i) => i.id === id);
+  if (!it || it.category === newCategory) return;
+  const next = { ...it, category: newCategory };
+  await putItem(next);
+  update({ items: state.items.map((i) => (i.id === id ? next : i)) });
 }
 
 export async function removeItemFully(id) {

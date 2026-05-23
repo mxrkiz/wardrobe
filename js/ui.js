@@ -11,7 +11,13 @@ import {
   updateLayer,
   removeLayer,
   clearLayers,
+  recategorizeItem,
 } from "./state.js";
+
+// Custom mime used by the wardrobe-tree drag-and-drop. The window-level file
+// drop handler in main.js checks for this and skips, so internal drags don't
+// trigger the file-upload pipeline.
+export const DRAG_MIME = "application/x-wardrobe-item-id";
 
 // Quick tagged-template HTML escaper.
 export function h(strings, ...values) {
@@ -56,9 +62,21 @@ export function initUploadCategorySelect() {
     });
   }
 
+  // hole-fill toggle (kills isolated bg-coloured regions — bag handles etc).
+  const holesSel = document.getElementById("upload-holes");
+  if (holesSel) {
+    holesSel.addEventListener("change", (e) => {
+      update({ fillHoles: e.target.value === "1" });
+    });
+  }
+
   subscribe((st) => {
     if (sel.value !== st.uploadCategory) sel.value = st.uploadCategory;
     if (bgSel && bgSel.value !== st.bgMode) bgSel.value = st.bgMode;
+    if (holesSel) {
+      const v = st.fillHoles ? "1" : "0";
+      if (holesSel.value !== v) holesSel.value = v;
+    }
   });
 }
 
@@ -70,7 +88,7 @@ export function initWardrobeTree({ onPlace, onEdit }) {
   const root = document.getElementById("wardrobe-tree");
   const countEl = document.getElementById("item-count");
 
-  // Render delegated event handlers once.
+  // ---- Click: toggle section, place on canvas, open edit modal -----------
   root.addEventListener("click", (e) => {
     const head = e.target.closest("[data-section]");
     if (head) {
@@ -90,6 +108,57 @@ export function initWardrobeTree({ onPlace, onEdit }) {
     if (thumb) {
       onPlace(thumb.dataset.itemId);
     }
+  });
+
+  // ---- Drag-and-drop: recategorize ---------------------------------------
+  // Source: any .thumb-wrap is draggable; we stash the item id in a custom
+  // mime. Target: every .tree-section accepts drops and assigns its category.
+  root.addEventListener("dragstart", (e) => {
+    const wrap = e.target.closest("[data-drag-item-id]");
+    if (!wrap) return;
+    const id = wrap.dataset.dragItemId;
+    e.dataTransfer.setData(DRAG_MIME, id);
+    e.dataTransfer.effectAllowed = "move";
+    wrap.classList.add("dragging");
+  });
+  root.addEventListener("dragend", (e) => {
+    const wrap = e.target.closest("[data-drag-item-id]");
+    if (wrap) wrap.classList.remove("dragging");
+    root.querySelectorAll(".tree-section.drop-target").forEach((el) =>
+      el.classList.remove("drop-target"),
+    );
+  });
+  root.addEventListener("dragover", (e) => {
+    if (!e.dataTransfer.types.includes(DRAG_MIME)) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = "move";
+    const section = e.target.closest(".tree-section");
+    root.querySelectorAll(".tree-section.drop-target").forEach((el) => {
+      if (el !== section) el.classList.remove("drop-target");
+    });
+    if (section) section.classList.add("drop-target");
+  });
+  root.addEventListener("dragleave", (e) => {
+    const section = e.target.closest(".tree-section");
+    if (!section) return;
+    // only remove when the cursor really left the section
+    if (!section.contains(e.relatedTarget)) {
+      section.classList.remove("drop-target");
+    }
+  });
+  root.addEventListener("drop", async (e) => {
+    const id = e.dataTransfer.getData(DRAG_MIME);
+    if (!id) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const section = e.target.closest(".tree-section");
+    if (!section) return;
+    const head = section.querySelector("[data-section]");
+    const newCat = head?.dataset.section;
+    if (!newCat) return;
+    // Make sure the target section is open so the user sees the result.
+    openSections.add(newCat);
+    await recategorizeItem(id, newCat);
   });
 
   function renderTree(st) {
@@ -121,10 +190,12 @@ export function initWardrobeTree({ onPlace, onEdit }) {
                 ? list
                     .map(
                       (it) => `
-              <div class="thumb-wrap">
+              <div class="thumb-wrap" draggable="true"
+                   data-drag-item-id="${escapeHtml(it.id)}"
+                   title="click → place · drag → recategorize">
                 <button class="thumb" data-item-id="${escapeHtml(it.id)}"
                         title="${escapeHtml(it.name)}">
-                  <img src="${escapeHtml(it.cutoutDataUrl)}" alt="${escapeHtml(it.name)}" />
+                  <img src="${escapeHtml(it.cutoutDataUrl)}" alt="${escapeHtml(it.name)}" draggable="false" />
                   ${
                     it.subcategory
                       ? `<span class="thumb-sub">${escapeHtml(it.subcategory)}</span>`

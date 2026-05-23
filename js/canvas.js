@@ -28,6 +28,32 @@ export function initCanvas(hostEl) {
   mainLayer = new Konva.Layer();
   stage.add(mainLayer);
 
+  // ---- Responsive scaling ------------------------------------------------
+  // Logical coords stay in 640×960; we scale the stage to fit its host. Konva
+  // accounts for stage.scale() in hit-testing, so drag / clicks / Transformer
+  // continue to work at every zoom level.
+  // We pick the smaller of width-fit and viewport-height-fit so the canvas
+  // never spills below the status bar on shallow windows (split-screen, etc).
+  const fitToHost = () => {
+    const hostW = hostEl.clientWidth;
+    if (hostW < 50) return;
+    // pane.center padding (18px top + 18px bottom) + topbar (32) + status (24)
+    const reserved = 32 + 24 + 36;
+    const maxH = Math.max(200, window.innerHeight - reserved);
+    const scale = Math.min(hostW / CANVAS_W, maxH / CANVAS_H);
+    stage.width(CANVAS_W * scale);
+    stage.height(CANVAS_H * scale);
+    stage.scale({ x: scale, y: scale });
+    stage.batchDraw();
+  };
+  fitToHost();
+  if ("ResizeObserver" in window) {
+    new ResizeObserver(fitToHost).observe(hostEl);
+  } else {
+    window.addEventListener("resize", fitToHost);
+  }
+  window.addEventListener("resize", fitToHost);
+
   // White background — gives the export a clean plate.
   mainLayer.add(
     new Konva.Rect({
