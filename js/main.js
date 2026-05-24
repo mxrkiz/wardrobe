@@ -21,6 +21,7 @@ import {
   initTopBar,
   initUploadVisuals,
   initGridToggle,
+  initCanvasBg,
   initMobileUI,
   DRAG_MIME,
 } from "./ui.js";
@@ -46,6 +47,7 @@ import {
   initTopBar({ onExport: handleExport });
   initUploadVisuals();
   initGridToggle();
+  initCanvasBg();
   initMobileUI();
 
   // 3. Wire IO.
@@ -191,7 +193,7 @@ async function importBackdrop(file) {
     update({ showGrid: false });
   } catch (e) {
     console.error("import failed:", e);
-    alert("Не удалось импортировать: " + (e.message || e));
+    alert("Import error: " + (e.message || e));
   } finally {
     update({ processing: false, progress: "" });
   }
@@ -236,13 +238,13 @@ function initDragDrop() {
       } catch (err) {
         alert(
           [
-            "Не удалось загрузить картинку по URL — почти всегда это CORS.",
+            "Failed to load image from URL — almost always a CORS issue.",
             "",
-            "Решения:",
-            "1) Правой кнопкой по картинке → «Save image as…» → перетащи файл сюда.",
-            "2) Правой кнопкой → «Copy image» → Ctrl+V в этом окне.",
+            "Solutions:",
+            "1) Right-click the image → «Save image as…» → drag the file here.",
+            "2) Right-click → «Copy image» → Ctrl+V in this window.",
             "",
-            "Ошибка: " + (err.message || err),
+            "Error: " + (err.message || err),
           ].join("\n"),
         );
         return;
@@ -250,7 +252,7 @@ function initDragDrop() {
     }
 
     alert(
-      "В дропе нет ни файла, ни URL картинки. Попробуй Ctrl+V (вставка из буфера).",
+      "No files detected in drop. Make sure to drop an image file, or a URL from another tab (drag the tab itself, not the image).",
     );
   });
 }
@@ -295,11 +297,12 @@ function initKeyboard() {
     if (inField) return;
 
     const st = getState();
-    if ((e.key === "Delete" || e.key === "Backspace") && st.selectedLayerId) {
-      // remove selected layer
-      import("./state.js").then(({ removeLayer }) =>
-        removeLayer(st.selectedLayerId),
-      );
+    if (
+      (e.key === "Delete" || e.key === "Backspace") &&
+      (st.selectedLayerIds || []).length
+    ) {
+      // erase all selected layers
+      import("./state.js").then(({ removeSelected }) => removeSelected());
       e.preventDefault();
     }
   });
@@ -344,7 +347,7 @@ async function handleFiles(files) {
     }
   } catch (e) {
     console.error("handleFiles failed:", e);
-    alert("Не удалось обработать файл: " + (e.message || e));
+    alert("Failed to process file: " + (e.message || e));
   } finally {
     update({ processing: false, progress: "" });
   }

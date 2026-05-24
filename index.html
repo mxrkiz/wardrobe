@@ -42,6 +42,15 @@
             <span class="title">wardrobe</span>
             <span class="muted" id="item-count">0</span>
             <span class="grow"></span>
+            <!-- canvas background — curated spectrum (light → dark + forest) -->
+            <span class="cbg" id="canvas-bg" role="group" title="canvas background">
+              <button class="cbg-sw" data-cbg="#ffffff" style="--c:#ffffff" title="white"></button>
+              <button class="cbg-sw" data-cbg="#eceff3" style="--c:#eceff3" title="paper"></button>
+              <button class="cbg-sw" data-cbg="#aeb6c2" style="--c:#aeb6c2" title="grey"></button>
+              <button class="cbg-sw" data-cbg="#161b22" style="--c:#161b22" title="panel"></button>
+              <button class="cbg-sw" data-cbg="#0d1117" style="--c:#0d1117" title="dark"></button>
+              <button class="cbg-sw" data-cbg="#0b1c14" style="--c:#0b1c14" title="forest"></button>
+            </span>
             <!-- grid on/off toggle. switch-style checkbox. -->
             <label class="switch" title="show/hide canvas grid">
               <input type="checkbox" id="toggle-grid" checked />
@@ -128,7 +137,7 @@
         <span class="sep">·</span>
         <span class="status-item" id="status-items">items: 0</span>
         <span class="grow"></span>
-        <span class="muted">v0.3 · local-first · MIT</span>
+        <span class="muted">v0.4 · local-first · MIT</span>
       </footer>
     </div>
 

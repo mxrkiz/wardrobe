@@ -12,6 +12,10 @@ import {
   removeLayer,
   clearLayers,
   recategorizeItem,
+  reorderLayersByZ,
+  moveLayerZ,
+  toggleSelection,
+  removeSelected,
 } from "./state.js";
 import { subscribeLivePreview } from "./canvas.js";
 
@@ -241,7 +245,30 @@ export function initInspector({ onEditItem }) {
   const ctl = { scale: null, rotate: null, opacity: null };
 
   function render(st) {
-    const layer = st.layers.find((l) => l.id === st.selectedLayerId);
+    const ids = st.selectedLayerIds || [];
+
+    // Multi-selection → compact summary (no per-layer sliders).
+    if (ids.length > 1) {
+      const sig = `multi:${ids.length}`;
+      if (currentSig !== sig) {
+        root.innerHTML = `
+          <p class="muted small">${ids.length} items selected</p>
+          <div class="btn-group" style="grid-template-columns: 1fr;">
+            <button class="danger" data-remove-selected="1">erase selected · Delete</button>
+          </div>
+          <p class="muted small">// drag any selected item on the canvas to move them together</p>
+        `;
+        const rm = root.querySelector("[data-remove-selected]");
+        if (rm) rm.addEventListener("click", () => removeSelected());
+        currentLayerId = "__multi__";
+        currentSig = sig;
+        currentNumericSig = null;
+        ctl.scale = ctl.rotate = ctl.opacity = null;
+      }
+      return;
+    }
+
+    const layer = ids.length === 1 ? st.layers.find((l) => l.id === ids[0]) : null;
     const item = layer ? st.items.find((i) => i.id === layer.itemId) : null;
 
     if (!layer || !item) {
@@ -317,8 +344,8 @@ export function initInspector({ onEditItem }) {
 
       <div class="btn-group">
         <span>z</span>
-        <button data-z="-5" title="send back">▼</button>
-        <button data-z="5"  title="bring forward">▲</button>
+        <button data-zmove="1"  title="bring forward (one level)">▲</button>
+        <button data-zmove="-1" title="send back (one level)">▼</button>
         <button data-edit-item="1" title="edit item meta">edit·meta</button>
       </div>
 
@@ -376,15 +403,10 @@ export function initInspector({ onEditItem }) {
         updateLayer(layer.id, { clip: b.dataset.clip }),
       );
     });
-    root.querySelectorAll("[data-z]").forEach((b) => {
-      b.addEventListener("click", () => {
-        const cur = getState().layers.find((l) => l.id === layer.id);
-        if (!cur) return;
-        const delta = parseInt(b.dataset.z, 10);
-        updateLayer(layer.id, {
-          zIndex: Math.max(0, cur.zIndex + delta),
-        });
-      });
+    root.querySelectorAll("[data-zmove]").forEach((b) => {
+      b.addEventListener("click", () =>
+        moveLayerZ(layer.id, parseInt(b.dataset.zmove, 10)),
+      );
     });
     const editBtn = root.querySelector("[data-edit-item]");
     if (editBtn) editBtn.addEventListener("click", () => onEditItem(item.id));
@@ -484,7 +506,68 @@ export function initLayerList() {
       e.stopPropagation();
       return;
     }
-    update({ selectedLayerId: id });
+    if (e.shiftKey || e.metaKey || e.ctrlKey) toggleSelection(id);
+    else update({ selectedLayerIds: [id] });
+  });
+
+  // ---- drag-to-reorder (z-order) -----------------------------------------
+  let dragId = null;
+  const clearDropMarks = () =>
+    root
+      .querySelectorAll(".drop-above, .drop-below")
+      .forEach((el) => el.classList.remove("drop-above", "drop-below"));
+
+  root.addEventListener("dragstart", (e) => {
+    const row = e.target.closest("[data-layer-id]");
+    if (!row) return;
+    dragId = row.dataset.layerId;
+    e.dataTransfer.effectAllowed = "move";
+    try {
+      e.dataTransfer.setData("text/plain", dragId);
+    } catch {}
+    row.classList.add("dragging");
+  });
+  root.addEventListener("dragend", () => {
+    root.querySelector(".layer-row.dragging")?.classList.remove("dragging");
+    clearDropMarks();
+    dragId = null;
+  });
+  root.addEventListener("dragover", (e) => {
+    if (!dragId) return;
+    const row = e.target.closest("[data-layer-id]");
+    if (!row || row.dataset.layerId === dragId) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = "move";
+    const r = row.getBoundingClientRect();
+    const below = e.clientY - r.top > r.height / 2;
+    clearDropMarks();
+    row.classList.add(below ? "drop-below" : "drop-above");
+  });
+  root.addEventListener("drop", (e) => {
+    if (!dragId) return;
+    const row = e.target.closest("[data-layer-id]");
+    if (!row) return;
+    e.preventDefault();
+    const targetId = row.dataset.layerId;
+    const r = row.getBoundingClientRect();
+    const below = e.clientY - r.top > r.height / 2;
+    const id = dragId;
+    dragId = null;
+    clearDropMarks();
+    if (targetId === id) return;
+    // Visible order is top→bottom = descending z. Reorder, then hand
+    // reorderLayersByZ the low→high list (front of stack last).
+    const order = [...getState().layers]
+      .sort((a, b) => b.zIndex - a.zIndex)
+      .map((l) => l.id);
+    const from = order.indexOf(id);
+    if (from < 0) return;
+    order.splice(from, 1);
+    let to = order.indexOf(targetId);
+    if (to < 0) return;
+    if (below) to += 1;
+    order.splice(to, 0, id);
+    reorderLayersByZ(order.reverse());
   });
 
   function render(st) {
@@ -495,11 +578,11 @@ export function initLayerList() {
       .map((l) => {
         const it = itemsById.get(l.itemId);
         if (!it) return "";
-        const sel = l.id === st.selectedLayerId ? "sel" : "";
+        const sel = (st.selectedLayerIds || []).includes(l.id) ? "sel" : "";
         const hidden = l.hidden ? "hidden" : "";
         return `
-          <div class="layer-row ${sel} ${hidden}" data-layer-id="${escapeHtml(l.id)}">
-            <img src="${escapeHtml(it.cutoutDataUrl)}" alt="" />
+          <div class="layer-row ${sel} ${hidden}" data-layer-id="${escapeHtml(l.id)}" draggable="true">
+            <img src="${escapeHtml(it.cutoutDataUrl)}" alt="" draggable="false" />
             <span class="name">
               <span>${escapeHtml(it.name)}</span>
               <span class="sub">${escapeHtml(CATEGORIES[it.category].label)}${
@@ -800,6 +883,25 @@ export function initGridToggle() {
 }
 
 // =============================================================================
+// CANVAS BACKGROUND SWATCHES (left pane head)
+// =============================================================================
+
+export function initCanvasBg() {
+  const wrap = document.getElementById("canvas-bg");
+  if (!wrap) return;
+  wrap.addEventListener("click", (e) => {
+    const sw = e.target.closest("[data-cbg]");
+    if (sw) update({ canvasBg: sw.dataset.cbg });
+  });
+  subscribe((st) => {
+    const cur = (st.canvasBg || "").toLowerCase();
+    wrap.querySelectorAll(".cbg-sw").forEach((b) => {
+      b.classList.toggle("active", b.dataset.cbg.toLowerCase() === cur);
+    });
+  });
+}
+
+// =============================================================================
 // MOBILE UI — collapsible bottom inspector
 // =============================================================================
 // On phones the right pane sits at the bottom of the vertical stack. It starts
@@ -825,13 +927,12 @@ export function initMobileUI() {
     setCollapsed(!right.classList.contains("collapsed")),
   );
 
-  // Auto-expand when a layer becomes selected on mobile.
-  let prevSel = null;
+  // Auto-expand when the selection becomes non-empty on mobile.
+  let prevCount = 0;
   subscribe((st) => {
-    if (mql.matches && st.selectedLayerId && st.selectedLayerId !== prevSel) {
-      setCollapsed(false);
-    }
-    prevSel = st.selectedLayerId;
+    const count = (st.selectedLayerIds || []).length;
+    if (mql.matches && count && count !== prevCount) setCollapsed(false);
+    prevCount = count;
   });
 
   // Reset to a sane default when crossing the breakpoint.

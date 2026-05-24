@@ -1,8 +1,12 @@
 // Categories: spine slot + default z-index + suggested subcategories.
 //
-// The three torso layers (top / mid / outerwear) sit at the same Y on the
-// spine. They only differ in z-order so that a jacket can cover a hoodie
-// which covers a t-shirt — without manual user reordering.
+// Visual top→bottom order in the wardrobe tree (the `order` field):
+//   hat · glasses · neck · outerwear · top·mid · top·base · bottoms · shoes · accessory
+//
+// The three torso layers (outerwear / mid / top) sit at the same Y on the
+// spine and differ only in z-order, so a jacket (z50) covers a hoodie (z40)
+// which covers a t-shirt (z30) — without manual reordering. hat is z55 so it
+// always clears an outerwear collar.
 
 export const CATEGORIES = {
   uncategorized: {
@@ -17,7 +21,7 @@ export const CATEGORIES = {
     label: "hat",
     relY: 0.07,
     targetH: 0.10,
-    z: 50,
+    z: 55,
     order: 0,
     subcategories: ["cap", "beanie", "hat", "bucket", "baseball", "beret"],
   },
@@ -29,22 +33,23 @@ export const CATEGORIES = {
     order: 1,
     subcategories: ["sunglasses", "optical", "sport"],
   },
-  scarf: {
-    label: "scarf",
+  neck: {
+    label: "neck",
     relY: 0.22,
     targetH: 0.08,
     z: 45,
     order: 2,
     subcategories: ["scarf", "snood", "kerchief", "bandana", "tie"],
   },
-  top: {
-    label: "top·base",
-    relY: 0.37,
-    targetH: 0.26,
-    z: 30,
+  outerwear: {
+    label: "outerwear",
+    relY: 0.38,
+    targetH: 0.34,
+    z: 50,
     order: 3,
     subcategories: [
-      "t-shirt", "tank", "longsleeve", "polo", "turtleneck", "shirt", "blouse",
+      "jacket", "coat", "windbreaker", "bomber", "trench",
+      "puffer", "raincoat", "leather",
     ],
   },
   mid: {
@@ -55,19 +60,18 @@ export const CATEGORIES = {
     order: 4,
     subcategories: ["hoodie", "sweatshirt", "sweater", "cardigan", "vest"],
   },
-  outerwear: {
-    label: "outerwear",
-    relY: 0.38,
-    targetH: 0.34,
-    z: 50,
+  top: {
+    label: "top·base",
+    relY: 0.37,
+    targetH: 0.26,
+    z: 30,
     order: 5,
     subcategories: [
-      "jacket", "coat", "windbreaker", "bomber", "trench",
-      "puffer", "raincoat", "leather",
+      "t-shirt", "tank", "longsleeve", "polo", "turtleneck", "shirt", "blouse",
     ],
   },
-  pants: {
-    label: "pants",
+  bottoms: {
+    label: "bottoms",
     relY: 0.65,
     targetH: 0.30,
     z: 20,

@@ -20,7 +20,7 @@ Open `index.html` with **Live Server** in VS Code (or any static HTTP server).
 
 - Drop, paste (Ctrl+V) or pick image files
 - Cutout cascade: `mono → ml → off` (configurable per-upload)
-- Auto-placement along a vertical spine: hat → glasses → scarf → top → mid → outerwear → pants → shoes
+- Auto-placement along a vertical spine: hat → glasses → scarf → outerwear → top·mid → top·base → bottoms → shoes
 - 9 categories, free-text subcategories with autocomplete
 - On-canvas resize/rotate handles + precise sliders + numeric inputs
 - Half-clip (`◧ ■ ◨`) for layered looks

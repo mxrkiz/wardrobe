@@ -616,6 +616,11 @@ input[type="checkbox"] {
 }
 .layer-row button:hover { color: var(--text); background: var(--bg-2); }
 .layer-row.hidden img { opacity: 0.35; }
+.layer-row { cursor: grab; }
+.layer-row:active { cursor: grabbing; }
+.layer-row.dragging { opacity: 0.4; }
+.layer-row.drop-above { box-shadow: inset 0 2px 0 0 var(--accent); }
+.layer-row.drop-below { box-shadow: inset 0 -2px 0 0 var(--accent); }
 
 /* ============================================================================
    STATUS BAR
@@ -803,6 +808,29 @@ input[type="checkbox"] {
   color: var(--muted);
   text-transform: lowercase;
   letter-spacing: 0.04em;
+}
+
+/* ---- canvas background swatches (left pane head) ---- */
+.cbg {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+}
+.cbg-sw {
+  width: 14px;
+  height: 14px;
+  padding: 0;
+  border-radius: 3px;
+  background: var(--c, #fff);
+  border: 1px solid var(--border-2);
+  cursor: pointer;
+  transition: box-shadow 0.1s, border-color 0.1s;
+}
+.cbg-sw:hover { border-color: var(--muted); background: var(--c, #fff); }
+.cbg-sw.active {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent);
+  background: var(--c, #fff);
 }
 
 /* ---- subcategory combobox (edit modal) ---- */
