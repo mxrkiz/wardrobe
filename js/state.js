@@ -11,6 +11,36 @@ import {
 } from "./db.js";
 import { CATEGORIES } from "./categories.js";
 
+/**
+ * @typedef {Object} WardrobeItem
+ * @property {string}   id
+ * @property {string}   name
+ * @property {string}   category       key into CATEGORIES
+ * @property {string}   subcategory
+ * @property {string[]} tags
+ * @property {string}   color          dominant colour #rrggbb, or ""
+ * @property {string}   cutoutDataUrl  PNG data URL drawn on the canvas
+ * @property {number}   width
+ * @property {number}   height
+ * @property {boolean}  hasBgRemoved
+ * @property {"mono"|"ml"|"none"} bgMethod
+ * @property {number}   createdAt
+ */
+
+/**
+ * @typedef {Object} CanvasLayer
+ * @property {string}  id
+ * @property {string}  itemId          the WardrobeItem this layer renders
+ * @property {number}  x
+ * @property {number}  y
+ * @property {number}  scale
+ * @property {number}  zIndex          draw order; lower draws first
+ * @property {number}  rotation        degrees
+ * @property {"full"|"left"|"right"} clip
+ * @property {number}  opacity         0..1
+ * @property {boolean} hidden
+ */
+
 // ---- State shape -----------------------------------------------------------
 
 let state = {
@@ -44,6 +74,7 @@ export function subscribe(fn) {
 }
 
 let saveTimer = null;
+const SAVE_DEBOUNCE_MS = 250; // coalesce rapid canvas edits into one IDB write
 
 export function update(patch) {
   state = { ...state, ...patch };
@@ -57,11 +88,27 @@ export function update(patch) {
         canvasBg: state.canvasBg,
         showGrid: state.showGrid,
       }).catch((e) => console.error("persist canvas failed:", e));
-    }, 250);
+    }, SAVE_DEBOUNCE_MS);
   }
 }
 
 // ---- Initial load ----------------------------------------------------------
+
+/**
+ * Pure: remap a persisted item's category. "pants"→"bottoms", "scarf"→"neck",
+ * and any category no longer in CATEGORIES → "uncategorized". Returns the SAME
+ * object reference when nothing changes (so callers can detect a no-op).
+ * @param {WardrobeItem} item
+ * @returns {WardrobeItem}
+ */
+export function migrateItemCategory(item) {
+  let cat =
+    item.category === "pants" ? "bottoms"
+    : item.category === "scarf" ? "neck"
+    : item.category;
+  if (!CATEGORIES[cat]) cat = "uncategorized";
+  return cat === item.category ? item : { ...item, category: cat };
+}
 
 export async function loadInitial() {
   try {
@@ -69,24 +116,25 @@ export async function loadInitial() {
       getAllItems(),
       getCanvasState(),
     ]);
-    // category migration — "pants" was renamed to "bottoms"; also guard any
-    // item whose category no longer exists in CATEGORIES (→ uncategorized).
+    // category migration (see migrateItemCategory): renames + unknown guard.
     const remapped = [];
     const sortedItems = items
       .sort((a, b) => a.createdAt - b.createdAt)
       .map((it) => {
-        let cat = it.category === "pants" ? "bottoms" : it.category;
-        if (!CATEGORIES[cat]) cat = "uncategorized";
-        if (cat === it.category) return it;
-        const next = { ...it, category: cat };
-        remapped.push(next);
+        const next = migrateItemCategory(it);
+        if (next !== it) remapped.push(next);
         return next;
       });
     // persist remapped items so the rename sticks in IndexedDB
-    remapped.forEach((it) => putItem(it).catch(() => {}));
+    remapped.forEach((it) =>
+      putItem(it).catch((e) =>
+        console.error("category migrate persist failed:", e),
+      ),
+    );
 
     let layers = canvas?.layers ?? [];
-    // schema migration — earlier layers might miss `opacity`
+    // schema migration — earlier layers might miss `opacity`. Stale flipX/flipY
+    // fields from older builds are simply ignored (flip was removed).
     layers = layers.map((l) => ({
       ...l,
       opacity: typeof l.opacity === "number" ? l.opacity : 1,
@@ -113,6 +161,7 @@ export async function refreshStorage() {
 
 // ---- Item actions ----------------------------------------------------------
 
+/** @param {WardrobeItem} item */
 export async function addItem(item) {
   await putItem(item);
   update({ items: [...state.items, item] });
@@ -149,36 +198,58 @@ export async function removeItemFully(id) {
 
 // ---- Layer actions ---------------------------------------------------------
 
+/** @param {CanvasLayer} layer */
 export function addLayer(layer) {
   update({ layers: [...state.layers, layer], selectedLayerIds: [layer.id] });
 }
 
+/** @param {string} id @param {Partial<CanvasLayer>} patch */
 export function updateLayer(id, patch) {
   update({
     layers: state.layers.map((l) => (l.id === id ? { ...l, ...patch } : l)),
   });
 }
 
-// Reassign zIndex from a low→high ordering of layer ids (front of stack last).
-export function reorderLayersByZ(orderedIdsLowToHigh) {
+// ---- Pure z-order cores (no side effects → unit-testable) ------------------
+
+/**
+ * Reassign zIndex from a low→high ordering of layer ids (front of stack last).
+ * @param {CanvasLayer[]} layers
+ * @param {string[]} orderedIdsLowToHigh
+ * @returns {CanvasLayer[]} new array
+ */
+export function computeZReorder(layers, orderedIdsLowToHigh) {
   const pos = new Map(orderedIdsLowToHigh.map((id, i) => [id, i]));
-  update({
-    layers: state.layers.map((l) =>
-      pos.has(l.id) ? { ...l, zIndex: pos.get(l.id) } : l,
-    ),
-  });
+  return layers.map((l) =>
+    pos.has(l.id) ? { ...l, zIndex: pos.get(l.id) } : l,
+  );
 }
 
-// Move a layer one step in z-order (dir > 0 = forward/up, < 0 = back/down),
-// swapping with its neighbour and renormalising zIndex to 0..N-1.
-export function moveLayerZ(id, dir) {
-  const sorted = [...state.layers].sort((a, b) => a.zIndex - b.zIndex);
+/**
+ * Move `id` one step in z-order (dir > 0 forward, < 0 back), swapping with its
+ * neighbour and renormalising to 0..N-1. Returns the SAME array on a no-op.
+ * @param {CanvasLayer[]} layers
+ * @param {string} id
+ * @param {number} dir
+ * @returns {CanvasLayer[]}
+ */
+export function computeZMove(layers, id, dir) {
+  const sorted = [...layers].sort((a, b) => a.zIndex - b.zIndex);
   const idx = sorted.findIndex((l) => l.id === id);
-  if (idx < 0) return;
+  if (idx < 0) return layers;
   const swap = idx + (dir > 0 ? 1 : -1);
-  if (swap < 0 || swap >= sorted.length) return;
+  if (swap < 0 || swap >= sorted.length) return layers;
   [sorted[idx], sorted[swap]] = [sorted[swap], sorted[idx]];
-  reorderLayersByZ(sorted.map((l) => l.id));
+  return computeZReorder(layers, sorted.map((l) => l.id));
+}
+
+export function reorderLayersByZ(orderedIdsLowToHigh) {
+  update({ layers: computeZReorder(state.layers, orderedIdsLowToHigh) });
+}
+
+export function moveLayerZ(id, dir) {
+  const next = computeZMove(state.layers, id, dir);
+  if (next !== state.layers) update({ layers: next });
 }
 
 export function removeLayer(id) {
@@ -194,21 +265,16 @@ export function clearLayers() {
 
 // ---- Selection (multi) -----------------------------------------------------
 
-export function setSelection(ids) {
-  update({ selectedLayerIds: Array.isArray(ids) ? [...new Set(ids)] : [] });
-}
-
-export function clearSelection() {
-  if (state.selectedLayerIds.length) update({ selectedLayerIds: [] });
+/**
+ * Pure: add `id` to the array if absent, remove it if present.
+ * @param {string[]} ids @param {string} id @returns {string[]} new array
+ */
+export function toggleId(ids, id) {
+  return ids.includes(id) ? ids.filter((x) => x !== id) : [...ids, id];
 }
 
 export function toggleSelection(id) {
-  const has = state.selectedLayerIds.includes(id);
-  update({
-    selectedLayerIds: has
-      ? state.selectedLayerIds.filter((x) => x !== id)
-      : [...state.selectedLayerIds, id],
-  });
+  update({ selectedLayerIds: toggleId(state.selectedLayerIds, id) });
 }
 
 // Erase everything currently selected (Delete key / inspector button).

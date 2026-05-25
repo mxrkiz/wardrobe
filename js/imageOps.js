@@ -212,6 +212,26 @@ export function detectMonoBg(
     return null;
   }
 
+  // --- 5. Reject if the subject itself is predominantly white --------------
+  // White items (white shirt, white sneaker) on a non-white bg would pass
+  // checks 3+4, but mono flood-fill from corners would also remove the item
+  // because white is within tolerance of… white. Detect this by counting how
+  // many of the foreground interior samples are near-white (all channels >215).
+  // If >60% are, fall back to ML.
+  let nearWhiteSubject = 0;
+  for (let yi = 1; yi <= 5; yi++) {
+    for (let xi = 1; xi <= 5; xi++) {
+      const x = Math.floor((w * xi) / 6);
+      const y = Math.floor((h * yi) / 6);
+      const s = sample(x, y);
+      const dr = s.r - bg.r, dg = s.g - bg.g, db = s.b - bg.b;
+      if (Math.sqrt(dr * dr + dg * dg + db * db) > interiorFgMinDist) {
+        if (s.r > 215 && s.g > 215 && s.b > 215) nearWhiteSubject++;
+      }
+    }
+  }
+  if (fgCount > 0 && nearWhiteSubject / fgCount > 0.6) return null;
+
   return bg;
 }
 
@@ -250,17 +270,28 @@ export function removeMonoBg(img, bgColor, opts = {}) {
     dist[i] = Math.sqrt(dr * dr + dg * dg + db * db);
   }
 
-  // Flood-fill from corners, marking bg-connected pixels.
+  // Flood-fill from border pixels, marking bg-connected pixels.
+  // Seeds come from (a) the four corners plus (b) every 10th pixel along all
+  // four edges — catches bg regions that the corners alone miss (e.g. a
+  // background that doesn't quite reach the very corner due to shadow/fringe).
   const bgConnected = new Uint8Array(N);
   const stack = [];
-  const cornerIdx = [0, w - 1, (h - 1) * w, h * w - 1];
   const reachThreshold = tolerance + feather;
-  for (const ci of cornerIdx) {
-    if (dist[ci] < reachThreshold) {
-      stack.push(ci);
-      bgConnected[ci] = 1;
+
+  const seed = (idx) => {
+    if (!bgConnected[idx] && dist[idx] < reachThreshold) {
+      bgConnected[idx] = 1;
+      stack.push(idx);
     }
-  }
+  };
+
+  // Four corners
+  seed(0); seed(w - 1); seed((h - 1) * w); seed(h * w - 1);
+  // Top and bottom edges at 10-px intervals
+  for (let x = 0; x < w; x += 10) { seed(x); seed((h - 1) * w + x); }
+  // Left and right edges at 10-px intervals
+  for (let y = 0; y < h; y += 10) { seed(y * w); seed(y * w + w - 1); }
+
   while (stack.length) {
     const idx = stack.pop();
     const x = idx % w;
@@ -302,6 +333,29 @@ export function removeMonoBg(img, bgColor, opts = {}) {
         if (target < cur) data[i * 4 + 3] = target;
       }
     }
+  }
+
+  // 1-px morphological erosion of the opaque mask: any opaque pixel that
+  // shares an edge with a transparent pixel is also made transparent. This
+  // removes the 1-pixel fringe of semi-opaque bg-coloured pixels that
+  // commonly forms at the boundary of flood-filled regions (JPEG artefacts,
+  // soft shadows). Applied after fillHoles so holes don't errode the subject.
+  const eroded = new Uint8Array(N); // 1 = candidate for erasure
+  for (let i = 0; i < N; i++) {
+    if (data[i * 4 + 3] === 0) continue; // already transparent
+    const x = i % w;
+    const y = (i - x) / w;
+    if (
+      (x > 0     && data[(i - 1) * 4 + 3] === 0) ||
+      (x < w - 1 && data[(i + 1) * 4 + 3] === 0) ||
+      (y > 0     && data[(i - w) * 4 + 3] === 0) ||
+      (y < h - 1 && data[(i + w) * 4 + 3] === 0)
+    ) {
+      eroded[i] = 1;
+    }
+  }
+  for (let i = 0; i < N; i++) {
+    if (eroded[i]) data[i * 4 + 3] = 0;
   }
 
   ctx.putImageData(id, 0, 0);
@@ -377,6 +431,199 @@ export function closeAlphaHoles(cutoutImg, originalImg, { alphaThreshold = 16 } 
   return c.toDataURL("image/png");
 }
 
+// ---- Remove isolated opaque islands ----------------------------------------
+// After BG removal a brand logo or stray pixel group can remain as a small
+// disconnected opaque island. Strategy: BFS over opaque pixels, find all
+// connected components, keep only those whose size is >= minFraction of the
+// largest component (default 4%). Smaller components are erased.
+// Safe default: 4% is conservative enough that a belt/sleeve that barely
+// touches the body still survives, while a corner logo (typically <1%) gets
+// removed.
+export function removeSmallIslands(imgData, { minFraction = 0.04, alphaThreshold = 16 } = {}) {
+  const { data, width: w, height: h } = imgData;
+  const N = w * h;
+  const visited = new Uint8Array(N);
+  const components = []; // [{pixels: [idx, …]}]
+
+  for (let start = 0; start < N; start++) {
+    if (visited[start] || data[start * 4 + 3] < alphaThreshold) continue;
+
+    // BFS — collect this component
+    const pixels = [];
+    const queue = [start];
+    visited[start] = 1;
+    while (queue.length) {
+      const idx = queue.pop();
+      pixels.push(idx);
+      const x = idx % w;
+      const y = (idx - x) / w;
+      const neighbors = [
+        x > 0     ? idx - 1 : -1,
+        x < w - 1 ? idx + 1 : -1,
+        y > 0     ? idx - w : -1,
+        y < h - 1 ? idx + w : -1,
+      ];
+      for (const n of neighbors) {
+        if (n >= 0 && !visited[n] && data[n * 4 + 3] >= alphaThreshold) {
+          visited[n] = 1;
+          queue.push(n);
+        }
+      }
+    }
+    components.push(pixels);
+  }
+
+  if (components.length === 0) return;
+
+  const maxSize = Math.max(...components.map((c) => c.length));
+  const threshold = maxSize * minFraction;
+
+  for (const pixels of components) {
+    if (pixels.length < threshold) {
+      for (const idx of pixels) data[idx * 4 + 3] = 0;
+    }
+  }
+}
+
+// ---- Fill bg-coloured holes left by ML (e.g. carpet through bag handle) ----
+// The ML model sometimes leaves interior regions opaque when they share the
+// same colour as the background (carpet through a bag handle). Strategy:
+//   1. Detect bg colour from the ORIGINAL image edges (same as detectMonoBg).
+//   2. In the ML cutout, flood-fill FROM every border-adjacent transparent
+//      pixel inward through opaque pixels that are close to the bg colour.
+//      These are genuine bg regions the model missed.
+//   3. Make those pixels transparent.
+// Only called when detectMonoBg returns a bg colour (i.e. there IS a uniform bg).
+export function fillBgHolesInMlCutout(cutoutImg, bgColor, { tolerance = 22, feather = 8, alphaThreshold = 16 } = {}) {
+  const w = cutoutImg.naturalWidth, h = cutoutImg.naturalHeight;
+  const c = document.createElement("canvas");
+  c.width = w; c.height = h;
+  const ctx = c.getContext("2d", { willReadFrequently: true });
+  ctx.drawImage(cutoutImg, 0, 0);
+  const id = ctx.getImageData(0, 0, w, h);
+  const data = id.data;
+  const N = w * h;
+
+  // Pre-compute distance to bg colour for every pixel.
+  const dist = new Float32Array(N);
+  for (let i = 0; i < N; i++) {
+    const j = i * 4;
+    const dr = data[j]     - bgColor.r;
+    const dg = data[j + 1] - bgColor.g;
+    const db = data[j + 2] - bgColor.b;
+    dist[i] = Math.sqrt(dr * dr + dg * dg + db * db);
+  }
+
+  const reachThreshold = tolerance + feather;
+  const bgConnected = new Uint8Array(N);
+  const stack = [];
+
+  // Seed from every transparent border pixel's opaque neighbours.
+  const tryPush = (idx) => {
+    if (!bgConnected[idx] && data[idx * 4 + 3] >= alphaThreshold && dist[idx] < reachThreshold) {
+      bgConnected[idx] = 1;
+      stack.push(idx);
+    }
+  };
+  // Walk the border looking for transparent pixels, then push their neighbours.
+  for (let x = 0; x < w; x++) {
+    for (const y of [0, h - 1]) {
+      const i = y * w + x;
+      if (data[i * 4 + 3] < alphaThreshold) { if (x > 0) tryPush(i - 1); if (x < w-1) tryPush(i + 1); if (y > 0) tryPush(i - w); if (y < h-1) tryPush(i + w); }
+    }
+  }
+  for (let y = 0; y < h; y++) {
+    for (const x of [0, w - 1]) {
+      const i = y * w + x;
+      if (data[i * 4 + 3] < alphaThreshold) { if (x > 0) tryPush(i - 1); if (x < w-1) tryPush(i + 1); if (y > 0) tryPush(i - w); if (y < h-1) tryPush(i + w); }
+    }
+  }
+
+  while (stack.length) {
+    const idx = stack.pop();
+    const x = idx % w, y = (idx - x) / w;
+    const ns = [x > 0 ? idx-1 : -1, x < w-1 ? idx+1 : -1, y > 0 ? idx-w : -1, y < h-1 ? idx+w : -1];
+    for (const n of ns) {
+      if (n >= 0 && !bgConnected[n] && data[n * 4 + 3] >= alphaThreshold && dist[n] < reachThreshold) {
+        bgConnected[n] = 1;
+        stack.push(n);
+      }
+    }
+  }
+
+  // Make bg-connected pixels transparent (with soft feather).
+  for (let i = 0; i < N; i++) {
+    if (!bgConnected[i]) continue;
+    const dd = dist[i];
+    if (dd < tolerance) {
+      data[i * 4 + 3] = 0;
+    } else {
+      const t = (dd - tolerance) / feather;
+      data[i * 4 + 3] = Math.min(data[i * 4 + 3], Math.round(255 * Math.min(1, Math.max(0, t))));
+    }
+  }
+
+  ctx.putImageData(id, 0, 0);
+  return c.toDataURL("image/png");
+}
+
+// ---- Gaussian feather on the alpha channel ---------------------------------
+// Applies a separable 1D Gaussian blur (σ=0.8, radius 2) to the alpha channel
+// only. Used after ML background removal to smooth jagged mask edges without
+// blurring the RGB colour values.
+function featherAlpha(img, sigma = 0.8) {
+  const w = img.naturalWidth, h = img.naturalHeight;
+  const c = document.createElement("canvas");
+  c.width = w; c.height = h;
+  const ctx = c.getContext("2d", { willReadFrequently: true });
+  ctx.drawImage(img, 0, 0);
+  const id = ctx.getImageData(0, 0, w, h);
+  const data = id.data;
+
+  // Build normalised 1D Gaussian kernel (radius = ceil(2σ)).
+  const r = Math.ceil(2 * sigma);
+  const kernel = [];
+  let ksum = 0;
+  for (let i = -r; i <= r; i++) {
+    const v = Math.exp(-(i * i) / (2 * sigma * sigma));
+    kernel.push(v);
+    ksum += v;
+  }
+  for (let i = 0; i < kernel.length; i++) kernel[i] /= ksum;
+
+  // Extract alpha into a float buffer.
+  const alpha = new Float32Array(w * h);
+  for (let i = 0; i < w * h; i++) alpha[i] = data[i * 4 + 3];
+
+  // Horizontal pass → tmp.
+  const tmp = new Float32Array(w * h);
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      let v = 0;
+      for (let k = 0; k < kernel.length; k++) {
+        const xi = Math.min(w - 1, Math.max(0, x + k - r));
+        v += alpha[y * w + xi] * kernel[k];
+      }
+      tmp[y * w + x] = v;
+    }
+  }
+
+  // Vertical pass → write back to data.
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      let v = 0;
+      for (let k = 0; k < kernel.length; k++) {
+        const yi = Math.min(h - 1, Math.max(0, y + k - r));
+        v += tmp[yi * w + x] * kernel[k];
+      }
+      data[(y * w + x) * 4 + 3] = Math.round(Math.min(255, Math.max(0, v)));
+    }
+  }
+
+  ctx.putImageData(id, 0, 0);
+  return c.toDataURL("image/png");
+}
+
 // ---- Full pipeline ---------------------------------------------------------
 
 export async function processFile(file, opts = {}) {
@@ -393,16 +640,29 @@ export async function processFile(file, opts = {}) {
   }
 
   const tryMono = bgMode === "auto" || bgMode === "mono";
-  const tryMl = bgMode === "auto" || bgMode === "ml";
+  const tryMl   = bgMode === "auto" || bgMode === "ml";
+
+  // Detect bg colour once — used by both mono and ml paths.
+  const detectedBg = (tryMono || tryMl) ? detectMonoBg(img) : null;
 
   // 2. mono — fast corner flood-fill. Pre-check rejects same-coloured fg/bg.
   if (tryMono) {
-    const bg = detectMonoBg(img);
+    const bg = detectedBg;
     if (bg) {
       try {
         const dataUrl = removeMonoBg(img, bg, { fillHoles });
         const cutout = await loadImage(dataUrl);
-        const trimmed = trimTransparent(cutout);
+        // Erase small disconnected opaque islands (e.g. a brand logo in the corner).
+        const monoCanvas = document.createElement("canvas");
+        monoCanvas.width = cutout.naturalWidth;
+        monoCanvas.height = cutout.naturalHeight;
+        const monoCtx = monoCanvas.getContext("2d", { willReadFrequently: true });
+        monoCtx.drawImage(cutout, 0, 0);
+        const monoId = monoCtx.getImageData(0, 0, monoCanvas.width, monoCanvas.height);
+        removeSmallIslands(monoId);
+        monoCtx.putImageData(monoId, 0, 0);
+        const cleanMono = await loadImage(monoCanvas.toDataURL("image/png"));
+        const trimmed = trimTransparent(cleanMono);
         const finalImg = await loadImage(trimmed.dataUrl);
         return {
           ...trimmed,
@@ -425,10 +685,28 @@ export async function processFile(file, opts = {}) {
         const url = URL.createObjectURL(cutoutBlob);
         try {
           const cutout = await loadImage(url);
+          // If the background is uniform, flood-fill bg-coloured opaque regions
+          // that ML missed (e.g. carpet visible through a bag handle loop).
+          const bgPatched = detectedBg
+            ? await loadImage(fillBgHolesInMlCutout(cutout, detectedBg))
+            : cutout;
           // Recover any interior holes the model punched into a solid subject
           // (e.g. a dark tattoo) before trimming away transparent borders.
-          const closed = await loadImage(closeAlphaHoles(cutout, img));
-          const trimmed = trimTransparent(closed);
+          const closed = await loadImage(closeAlphaHoles(bgPatched, img));
+          // Feather the alpha channel (1px Gaussian, σ=0.8) to smooth the
+          // jagged pixel-level edges the ISNet model sometimes produces.
+          const feathered = await loadImage(featherAlpha(closed));
+          // Erase small disconnected opaque islands (e.g. a brand logo in the corner).
+          const mlCanvas = document.createElement("canvas");
+          mlCanvas.width = feathered.naturalWidth;
+          mlCanvas.height = feathered.naturalHeight;
+          const mlCtx = mlCanvas.getContext("2d", { willReadFrequently: true });
+          mlCtx.drawImage(feathered, 0, 0);
+          const mlId = mlCtx.getImageData(0, 0, mlCanvas.width, mlCanvas.height);
+          removeSmallIslands(mlId);
+          mlCtx.putImageData(mlId, 0, 0);
+          const cleanMl = await loadImage(mlCanvas.toDataURL("image/png"));
+          const trimmed = trimTransparent(cleanMl);
           const finalImg = await loadImage(trimmed.dataUrl);
           return {
             ...trimmed,

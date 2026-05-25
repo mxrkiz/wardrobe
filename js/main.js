@@ -1,15 +1,24 @@
 // Entry point — wires DOM, state, canvas, and IO together.
 
-import { initCanvas, exportPng, CANVAS_W, CANVAS_H, SPINE_X } from "./canvas.js";
+import {
+  initCanvas,
+  exportPng,
+  isLayerDragging,
+  CANVAS_W,
+  CANVAS_H,
+  SPINE_X,
+} from "./canvas.js";
 import { CATEGORIES } from "./categories.js";
 import { probeBgRemoval } from "./bg.js";
-import { processFile, uid } from "./imageOps.js";
+import { processFile } from "./imageOps.js";
+import { makeItem, makeLayer } from "./factory.js";
 import {
   getState,
   update,
   addItem,
   addLayer,
   loadInitial,
+  removeSelected,
 } from "./state.js";
 import {
   initUploadCategorySelect,
@@ -23,7 +32,6 @@ import {
   initGridToggle,
   initCanvasBg,
   initMobileUI,
-  DRAG_MIME,
 } from "./ui.js";
 
 // =============================================================================
@@ -84,20 +92,16 @@ function placeOnCanvas(itemId) {
   const item = st.items.find((i) => i.id === itemId);
   if (!item) return;
   const spec = CATEGORIES[item.category];
-  const targetH = spec.targetH * CANVAS_H;
-  const scale = targetH / item.height;
-  addLayer({
-    id: uid(),
-    itemId: item.id,
-    x: SPINE_X,
-    y: spec.relY * CANVAS_H,
-    scale,
-    rotation: 0,
-    zIndex: spec.z,
-    clip: "full",
-    opacity: 1,
-    hidden: false,
-  });
+  const scale = (spec.targetH * CANVAS_H) / item.height;
+  addLayer(
+    makeLayer({
+      itemId: item.id,
+      x: SPINE_X,
+      y: spec.relY * CANVAS_H,
+      scale,
+      zIndex: spec.z,
+    }),
+  );
 }
 
 // =============================================================================
@@ -162,34 +166,21 @@ async function importBackdrop(file) {
   update({ processing: true, progress: `importing · ${file.name}` });
   try {
     const r = await processFile(file, { bgMode: "off" });
-    const item = {
-      id: uid(),
+    const item = makeItem(r, {
       name: file.name.replace(/\.[^.]+$/, "") || "import",
       category: "uncategorized",
-      subcategory: "",
-      tags: [],
-      color: r.color,
-      cutoutDataUrl: r.dataUrl,
-      width: r.width,
-      height: r.height,
-      hasBgRemoved: false,
-      bgMethod: "none",
-      createdAt: Date.now(),
-    };
+    });
     await addItem(item);
     const fit = Math.min(CANVAS_W / r.width, CANVAS_H / r.height);
-    addLayer({
-      id: uid(),
-      itemId: item.id,
-      x: SPINE_X,
-      y: CANVAS_H / 2,
-      scale: fit,
-      rotation: 0,
-      zIndex: 0,        // behind wardrobe layers (their z starts at 20)
-      clip: "full",
-      opacity: 1,
-      hidden: false,
-    });
+    addLayer(
+      makeLayer({
+        itemId: item.id,
+        x: SPINE_X,
+        y: CANVAS_H / 2,
+        scale: fit,
+        zIndex: 0, // behind wardrobe layers
+      }),
+    );
     update({ showGrid: false });
   } catch (e) {
     console.error("import failed:", e);
@@ -206,11 +197,8 @@ function initDragDrop() {
     const dt = e.dataTransfer;
     if (!dt) return;
 
-    // Internal wardrobe-tree drag (recategorize). The tree's own drop handler
-    // takes care of it; we just bail so we don't try to "upload" the item.
-    if (dt.types && Array.from(dt.types).includes(DRAG_MIME)) {
-      return;
-    }
+    // A canvas layer being dragged must never be read as a file upload.
+    if (isLayerDragging()) return;
 
     e.preventDefault();
 
@@ -251,9 +239,8 @@ function initDragDrop() {
       }
     }
 
-    alert(
-      "No files detected in drop. Make sure to drop an image file, or a URL from another tab (drag the tab itself, not the image).",
-    );
+    // Nothing droppable (e.g. a stray drag that ended over the window). This
+    // is a no-op, not an error — stay silent rather than alarming the user.
   });
 }
 
@@ -269,6 +256,7 @@ async function fetchRemoteImage(url) {
 
 function initClipboardPaste() {
   window.addEventListener("paste", async (e) => {
+    if (isLayerDragging()) return;
     const items = Array.from(e.clipboardData?.items ?? []);
     const blobs = [];
     for (const it of items) {
@@ -301,8 +289,7 @@ function initKeyboard() {
       (e.key === "Delete" || e.key === "Backspace") &&
       (st.selectedLayerIds || []).length
     ) {
-      // erase all selected layers
-      import("./state.js").then(({ removeSelected }) => removeSelected());
+      removeSelected(); // erase all selected layers
       e.preventDefault();
     }
   });
@@ -328,20 +315,10 @@ async function handleFiles(files) {
         bgMode: getState().bgMode,
         fillHoles: getState().fillHoles,
       });
-      const item = {
-        id: uid(),
-        name: f.name.replace(/\.[^.]+$/, "") || "image",
+      const item = makeItem(r, {
+        name: f.name.replace(/\.[^.]+$/, ""),
         category: getState().uploadCategory,
-        subcategory: "",
-        tags: [],
-        color: r.color,
-        cutoutDataUrl: r.dataUrl,
-        width: r.width,
-        height: r.height,
-        hasBgRemoved: r.hasBgRemoved,
-        bgMethod: r.bgMethod,   // "mono" | "ml" | "none"
-        createdAt: Date.now(),
-      };
+      });
       await addItem(item);
       placeOnCanvas(item.id);
     }

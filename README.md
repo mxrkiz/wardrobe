@@ -10,7 +10,7 @@ Open `index.html` with **Live Server** in VS Code (or any static HTTP server).
 
 ## Stack
 
-- Vanilla JS, ES modules
+- Vanilla JS, ES modules, no build step
 - [Konva](https://konvajs.org/) — canvas (via esm.sh)
 - [@imgly/background-removal](https://github.com/imgly/background-removal-js) — ML cutout, lazy-loaded (via esm.sh)
 - Custom flood-fill — fast cutout for product photos on uniform backgrounds
@@ -19,27 +19,33 @@ Open `index.html` with **Live Server** in VS Code (or any static HTTP server).
 ## Features
 
 - Drop, paste (Ctrl+V) or pick image files
-- Cutout cascade: `mono → ml → off` (configurable per-upload)
-- Auto-placement along a vertical spine: hat → glasses → scarf → outerwear → top·mid → top·base → bottoms → shoes
+- Auto background removal: flood-fill for uniform BG, ML model for everything else
+- Auto-placement along a vertical spine: hat → glasses → neck → outerwear → top·mid → top·base → bottoms → shoes
 - 9 categories, free-text subcategories with autocomplete
 - On-canvas resize/rotate handles + precise sliders + numeric inputs
 - Half-clip (`◧ ■ ◨`) for layered looks
 - Edit item meta: name, category, subcategory, tags, color
+- In-canvas brush editor to manually erase regions
 - PNG export
 - All data lives in your browser's IndexedDB
 
 ## Background removal
 
-| Mode | When to use |
-|---|---|
-| `auto` (default) | Tries `mono` first; falls back to `ml` if the background isn't uniform or the foreground is bg-coloured |
-| `mono only` | Force flood-fill — instant, no model download |
-| `ml only` | Force @imgly ISNet — for non-uniform backgrounds |
-| `off` | Keep original — when you've already cut the BG yourself |
+Background removal runs automatically on upload using a two-stage cascade:
+
+1. **Flood-fill** — instant, for photos on a uniform background (white seamless, grey studio, etc.)
+2. **ML** (`@imgly` ISNet `medium`) — for real-world or non-uniform backgrounds
+
+### Known limitations
+
+| Case | Behaviour |
+| --- | --- |
+| White item on white background | ML cannot reliably distinguish subject from background. Use the brush editor to cut manually after upload. |
+| Closed loops with same-colour background (e.g. carpet through a bag handle) | Automatic detection fails for textured backgrounds. Touch up with the brush editor. |
 
 ## Structure
 
-```
+```text
 index.html        # shell + import map
 style.css         # terminal-dark theme
 js/
@@ -47,22 +53,18 @@ js/
   state.js        # pub/sub state + IDB sync
   db.js           # IndexedDB wrapper
   bg.js           # @imgly loader (lazy, with fallback)
-  imageOps.js     # mono-bg detect/fill + trim + dominant color
+  imageOps.js     # mono-bg detect/fill + ML post-processing + trim
   categories.js   # 9 categories + spine layout + subcategories
   canvas.js       # Konva stage + Transformer + half-clip groups
-  ui.js           # tree, inspector, layers, modal
+  editor.js       # in-canvas brush eraser overlay
+  ui/             # tree, inspector, layers, modal, chrome
 ```
 
 ## Keyboard
 
 - `Delete` / `Backspace` — remove selected layer
-- `Esc` — close edit modal
-
-## Roadmap
-
-- Saved outfits (named, browsable)
-- Undo / redo
-- Optional RMBG-1.4
+- `Ctrl/Cmd+Z` — undo last brush stroke (in brush editor)
+- `Esc` — close edit modal or brush editor
 
 ## License
 

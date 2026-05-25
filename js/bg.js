@@ -39,9 +39,9 @@ export async function removeBackground(blob) {
   await ensureLoaded();
   if (!removeFn) throw new Error("bg removal not loaded");
   return await removeFn(blob, {
-    // isnet_fp16 = fastest. swap to 'isnet' for higher quality on cluttered
-    // backgrounds (≈3× slower)
-    model: "isnet_fp16",
+    // "medium" = better quality for complex/same-colour backgrounds.
+    // swap to "small" for faster processing on simple backgrounds.
+    model: "medium",
     output: { format: "image/png" },
   });
 }

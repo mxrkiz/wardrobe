@@ -39,7 +39,7 @@ export const CATEGORIES = {
     targetH: 0.08,
     z: 45,
     order: 2,
-    subcategories: ["scarf", "snood", "kerchief", "bandana", "tie"],
+    subcategories: ["scarf", "snood", "necktie", "collar", "bandana", "kerchief"],
   },
   outerwear: {
     label: "outerwear",

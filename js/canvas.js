@@ -7,26 +7,24 @@ import Konva from "konva";
 
 import { CATEGORIES, ALL_CATEGORIES } from "./categories.js";
 import { getState, subscribe, update, updateLayer } from "./state.js";
+import { rectsIntersect, isDarkColor } from "./util.js";
 
 export const CANVAS_W = 640;
 export const CANVAS_H = 960;
 export const SPINE_X = CANVAS_W / 2;
+
+const GRID_STEP = 40;        // dot-grid spacing (logical px)
+const MARQUEE_MIN_PX = 3;    // ignore marquee drags smaller than this
+const GRID_DOT_DARK = "rgba(230, 233, 238, 0.12)";  // dots on a dark canvas bg
+const GRID_DOT_LIGHT = "rgba(13, 17, 23, 0.07)";    // dots on a light canvas bg
 
 let stage = null;
 let mainLayer = null;
 let transformer = null;
 let guideGroup = null;   // spine + slot ticks + dot grid; toggled by state.showGrid
 let bgRect = null;       // canvas background plate; fill comes from state.canvasBg
-let gridDotColor = "rgba(13, 17, 23, 0.07)"; // adapts to a light/dark canvasBg
+let gridDotColor = GRID_DOT_LIGHT; // adapts to a light/dark canvasBg
 
-// Perceived-luminance check so the dot grid stays visible on any canvas bg.
-function isDarkColor(hex) {
-  const m = /^#?([0-9a-f]{6})$/i.exec(hex || "");
-  if (!m) return false;
-  const n = parseInt(m[1], 16);
-  const r = (n >> 16) & 255, g = (n >> 8) & 255, b = n & 255;
-  return 0.299 * r + 0.587 * g + 0.114 * b < 128;
-}
 const groupNodes = new Map();   // layerId → Konva.Group
 const imageNodes = new Map();   // layerId → Konva.Image
 const imageCache = new Map();   // itemId  → HTMLImageElement
@@ -50,22 +48,26 @@ function emitPreview(layerId, props) {
 // so Konva's transient scaleX/scaleY isn't fought.
 const transformingLayers = new Set();
 
+// Track layers currently being dragged. syncLayers skips resetting x/y for
+// any layer in this set so mid-drag state updates (storage refresh, etc.)
+// don't snap the node back to its pre-drag position.
+const draggingLayers = new Set();
+
+// True while a canvas layer is being dragged. The window-level file-drop /
+// paste handlers consult this so a layer drag is never mistaken for an
+// attempt to upload a new item.
+let layerDragActive = false;
+export function isLayerDragging() {
+  return layerDragActive;
+}
+
 // Marquee (desktop rubber-band multi-select) + group-drag bookkeeping.
 let marqueeRect = null;     // Konva.Rect drawn while dragging on empty canvas
 let marqueeStart = null;    // {x,y} in logical coords
-let marqueeMoved = false;
-let groupDrag = false;      // moving a whole multi-selection at once
+let hasMarqueeMoved = false;
+let isGroupDragging = false;      // moving a whole multi-selection at once
 let dragAnchorStart = null; // dragged node's start pos during a group drag
 const groupStart = new Map(); // layerId → {x,y} at group-drag start
-
-function rectsIntersect(a, b) {
-  return !(
-    a.x + a.width < b.x ||
-    b.x + b.width < a.x ||
-    a.y + a.height < b.y ||
-    b.y + b.height < a.y
-  );
-}
 
 export function initCanvas(hostEl) {
   stage = new Konva.Stage({
@@ -75,6 +77,12 @@ export function initCanvas(hostEl) {
   });
   mainLayer = new Konva.Layer();
   stage.add(mainLayer);
+
+  // Chrome lets a <canvas> be dragged as a native image. Dragging a layer
+  // would then start an OS image-drag that ends in a window "drop" with no
+  // files — which the upload handler used to report as "No files detected".
+  // Suppress the native drag entirely; Konva's own drag uses mouse events.
+  hostEl.addEventListener("dragstart", (e) => e.preventDefault());
 
   // ---- Responsive scaling ------------------------------------------------
   // Logical coords stay in 640×960; we scale the stage to fit. Konva accounts
@@ -141,7 +149,7 @@ export function initCanvas(hostEl) {
       name: "guide",
       listening: false,
       sceneFunc: (ctx) => {
-        const step = 40;
+        const step = GRID_STEP;
         ctx.fillStyle = gridDotColor;
         for (let x = step; x < CANVAS_W; x += step) {
           for (let y = step; y < CANVAS_H; y += step) {
@@ -186,6 +194,8 @@ export function initCanvas(hostEl) {
     keepRatio: true,
     enabledAnchors: ["top-left", "top-right", "bottom-left", "bottom-right"],
     anchorSize: 8,
+    anchorHitStroke: 35,  // larger hit area without changing visual size
+    padding: 4,
     anchorStroke: "#3fb950",
     anchorFill: "#0d1117",
     anchorCornerRadius: 1,
@@ -195,6 +205,17 @@ export function initCanvas(hostEl) {
     rotateLineVisible: true,
   });
   mainLayer.add(transformer);
+
+  // Show a rotation cursor when the mouse enters the rotate handle.
+  // Uses mouseover (which bubbles from child anchors) so we can check target.
+  transformer.on("mouseover", (e) => {
+    if (e.target && typeof e.target.hasName === "function" && e.target.hasName("rotater")) {
+      stage.container().style.cursor = "alias";
+    }
+  });
+  transformer.on("mouseout", () => {
+    stage.container().style.cursor = "default";
+  });
 
   // ---- Marquee multi-select (desktop) -----------------------------------
   // Drag on the empty canvas to rubber-band a selection box; items inside it
@@ -213,7 +234,7 @@ export function initCanvas(hostEl) {
       marqueeRect.destroy();
       marqueeRect = null;
     }
-    if (marqueeMoved && box && (box.width > 3 || box.height > 3)) {
+    if (hasMarqueeMoved && box && (box.width > MARQUEE_MIN_PX || box.height > MARQUEE_MIN_PX)) {
       const hits = [];
       imageNodes.forEach((node, layerId) => {
         const r = node.getClientRect({ relativeTo: mainLayer });
@@ -224,7 +245,7 @@ export function initCanvas(hostEl) {
       update({ selectedLayerIds: [] });
     }
     marqueeStart = null;
-    marqueeMoved = false;
+    hasMarqueeMoved = false;
     mainLayer.batchDraw();
   };
 
@@ -232,7 +253,7 @@ export function initCanvas(hostEl) {
     if (e.target !== stage) return; // only when starting on empty canvas
     const pos = stage.getRelativePointerPosition();
     marqueeStart = pos;
-    marqueeMoved = false;
+    hasMarqueeMoved = false;
     marqueeRect = new Konva.Rect({
       name: "marquee",
       x: pos.x,
@@ -256,7 +277,7 @@ export function initCanvas(hostEl) {
     const w = Math.abs(pos.x - marqueeStart.x);
     const h = Math.abs(pos.y - marqueeStart.y);
     marqueeRect.setAttrs({ x, y, width: w, height: h });
-    if (w > 3 || h > 3) marqueeMoved = true;
+    if (w > MARQUEE_MIN_PX || h > MARQUEE_MIN_PX) hasMarqueeMoved = true;
     mainLayer.batchDraw();
   });
   stage.on("mouseup", finishMarquee);
@@ -269,11 +290,6 @@ export function initCanvas(hostEl) {
 
   // Re-render layers whenever state changes.
   subscribe(syncLayers);
-}
-
-// ---- Stage handle for export ----------------------------------------------
-export function getStage() {
-  return stage;
 }
 
 // ---- Sync layer state → Konva nodes ---------------------------------------
@@ -304,9 +320,7 @@ function syncLayers(st) {
 
   // Canvas background plate + adaptive dot-grid colour.
   if (bgRect) bgRect.fill(st.canvasBg || "#ffffff");
-  gridDotColor = isDarkColor(st.canvasBg)
-    ? "rgba(230, 233, 238, 0.12)"
-    : "rgba(13, 17, 23, 0.07)";
+  gridDotColor = isDarkColor(st.canvasBg) ? GRID_DOT_DARK : GRID_DOT_LIGHT;
 
   const { layers, items, selectedLayerIds } = st;
   const itemsById = new Map(items.map((i) => [i.id, i]));
@@ -331,158 +345,18 @@ function syncLayers(st) {
 
     let group = groupNodes.get(layer.id);
     let imgNode = imageNodes.get(layer.id);
-
-    if (!group || !imgNode) {
-      group = new Konva.Group({ name: `layer-${layer.id}` });
-      imgNode = new Konva.Image({
-        image: img,
-        draggable: true,
-      });
-      group.add(imgNode);
-      mainLayer.add(group);
-
-      // events — select on press. Shift/Ctrl/Cmd toggles into a multi-select;
-      // pressing an already-selected item keeps the group so it can be dragged.
-      imgNode.on("mousedown touchstart", (e) => {
-        const id = layer.id;
-        const ev = e.evt || {};
-        const additive = ev.shiftKey || ev.metaKey || ev.ctrlKey;
-        const cur = getState().selectedLayerIds || [];
-        if (additive) {
-          update({
-            selectedLayerIds: cur.includes(id)
-              ? cur.filter((x) => x !== id)
-              : [...cur, id],
-          });
-        } else if (!cur.includes(id)) {
-          update({ selectedLayerIds: [id] });
-        }
-      });
-
-      // double-click / double-tap → reset this layer's rotation to 0
-      imgNode.on("dblclick dbltap", () => {
-        updateLayer(layer.id, { rotation: 0 });
-      });
-
-      // ---- drag (single, or move the whole multi-selection together) ----
-      imgNode.on("dragstart", () => {
-        const sel = getState().selectedLayerIds || [];
-        groupDrag = sel.length > 1 && sel.includes(layer.id);
-        groupStart.clear();
-        if (groupDrag) {
-          sel.forEach((id) => {
-            const n = imageNodes.get(id);
-            if (n) groupStart.set(id, { x: n.x(), y: n.y() });
-          });
-          dragAnchorStart = { x: imgNode.x(), y: imgNode.y() };
-        }
-      });
-      imgNode.on("dragmove", () => {
-        if (groupDrag && dragAnchorStart) {
-          const dx = imgNode.x() - dragAnchorStart.x;
-          const dy = imgNode.y() - dragAnchorStart.y;
-          groupStart.forEach((p, id) => {
-            if (id === layer.id) return;
-            const n = imageNodes.get(id);
-            if (n) {
-              n.x(p.x + dx);
-              n.y(p.y + dy);
-            }
-          });
-          transformer.forceUpdate();
-          mainLayer.batchDraw();
-        }
-        // live: notify the inspector. Don't write to state — we'd race with
-        // syncLayers re-applying x/y on the very same frame.
-        emitPreview(layer.id, { x: imgNode.x(), y: imgNode.y() });
-      });
-      imgNode.on("dragend", () => {
-        if (groupDrag && dragAnchorStart) {
-          const dx = imgNode.x() - dragAnchorStart.x;
-          const dy = imgNode.y() - dragAnchorStart.y;
-          const st2 = getState();
-          update({
-            layers: st2.layers.map((l) => {
-              const p = groupStart.get(l.id);
-              return p ? { ...l, x: p.x + dx, y: p.y + dy } : l;
-            }),
-          });
-          groupDrag = false;
-          dragAnchorStart = null;
-          groupStart.clear();
-        } else {
-          updateLayer(layer.id, { x: imgNode.x(), y: imgNode.y() });
-        }
-      });
-
-      // ---- transform (resize + rotate handles) --------------------------
-      imgNode.on("transformstart", () => {
-        transformingLayers.add(layer.id);
-      });
-      imgNode.on("transform", () => {
-        // Live preview: compute the effective scale (state.scale × Konva's
-        // transient scaleX) and current rotation. keepRatio=true → sX === sY.
-        const cur = getState().layers.find((l) => l.id === layer.id);
-        const baseScale = cur ? cur.scale : layer.scale;
-        emitPreview(layer.id, {
-          x: imgNode.x(),
-          y: imgNode.y(),
-          scale: baseScale * imgNode.scaleX(),
-          rotation: imgNode.rotation(),
-        });
-      });
-      imgNode.on("transformend", () => {
-        transformingLayers.delete(layer.id);
-        const sx = imgNode.scaleX();
-        const cur = getState().layers.find((l) => l.id === layer.id);
-        updateLayer(layer.id, {
-          x: imgNode.x(),
-          y: imgNode.y(),
-          scale: (cur ? cur.scale : layer.scale) * sx,
-          rotation: imgNode.rotation(),
-        });
-        // reset Konva's transient scale — our state owns the truth
-        imgNode.scaleX(1);
-        imgNode.scaleY(1);
-      });
-
-      groupNodes.set(layer.id, group);
-      imageNodes.set(layer.id, imgNode);
-    }
-
-    // Update visual props. While a transform is in progress we keep our hands
-    // off geometry — Konva has a transient scaleX/scaleY in flight, and
-    // overwriting width/height/offset/x/y/rotation would tug-of-war with it.
-    const w = item.width * layer.scale;
-    const h = item.height * layer.scale;
-    imgNode.image(img);
-    if (!transformingLayers.has(layer.id)) {
-      imgNode.x(layer.x);
-      imgNode.y(layer.y);
-      imgNode.width(w);
-      imgNode.height(h);
-      imgNode.offsetX(w / 2);
-      imgNode.offsetY(h / 2);
-      imgNode.rotation(layer.rotation);
-    }
-    imgNode.opacity(layer.opacity);
-    imgNode.visible(!layer.hidden);
-
-    // Half-clip via Group.clipFunc.
-    if (layer.clip === "full") {
-      group.clipFunc(null);
-    } else {
-      const isLeft = layer.clip === "left";
-      group.clipFunc((ctx) => {
-        if (isLeft) ctx.rect(0, 0, SPINE_X, CANVAS_H);
-        else ctx.rect(SPINE_X, 0, CANVAS_W - SPINE_X, CANVAS_H);
-      });
-    }
+    if (!group || !imgNode) ({ group, imgNode } = createLayerNode(layer, img));
+    applyLayerVisual(group, imgNode, layer, item, img);
   });
 
   // 4. Apply z-order (Konva: setZIndex relative to siblings in same parent).
-  //    bg = 0, guides start at 1. Layers start above them.
-  const baseZ = 2 + ALL_CATEGORIES.length;
+  //    bg = 0, guideGroup = 1. Layer groups start at 2. Transformer is moved
+  //    to top afterwards. With N layers the valid range is [0, N+2]; baseZ=2
+  //    gives indices 2..N+1, which is always in range.
+  //    (Previously baseZ = 2 + ALL_CATEGORIES.length, but guide slot markers
+  //    are children of guideGroup, not mainLayer — so ALL_CATEGORIES.length
+  //    was wrong and caused "setZIndex out of range" errors with few layers.)
+  const baseZ = 2;
   sorted.forEach((layer, idx) => {
     const g = groupNodes.get(layer.id);
     if (g) g.setZIndex(baseZ + idx);
@@ -491,9 +365,186 @@ function syncLayers(st) {
   // 5. Transformer stays on top.
   transformer.moveToTop();
 
-  // 6. Attach transformer to all selected nodes. A single selection gets full
-  //    resize+rotate; a multi-selection shows just the bounding box (move by
-  //    dragging any selected item, erase with the Delete key).
+  // 6. Attach transformer to the selection (single = full handles; multi =
+  //    bounding box only — move by drag, erase with Delete).
+  attachTransformer(selectedLayerIds);
+
+  // 7. Guides (spine / slots / dot grid) on/off.
+  if (guideGroup) guideGroup.visible(st.showGrid !== false);
+
+  mainLayer.batchDraw();
+}
+
+// Create the Konva group + image node for a layer and bind all of its
+// pointer / drag / transform handlers. Registers into the node maps and
+// returns the pair.
+function createLayerNode(layer, img) {
+  const group = new Konva.Group({ name: `layer-${layer.id}` });
+  const imgNode = new Konva.Image({ image: img, draggable: true });
+  group.add(imgNode);
+  mainLayer.add(group);
+
+  // events — select on press. Shift/Ctrl/Cmd toggles into a multi-select;
+  // pressing an already-selected item keeps the group so it can be dragged.
+  imgNode.on("mousedown touchstart", (e) => {
+    const id = layer.id;
+    const ev = e.evt || {};
+    const isAdditive = ev.shiftKey || ev.metaKey || ev.ctrlKey;
+    const cur = getState().selectedLayerIds || [];
+    if (isAdditive) {
+      update({
+        selectedLayerIds: cur.includes(id)
+          ? cur.filter((x) => x !== id)
+          : [...cur, id],
+      });
+    } else if (!cur.includes(id)) {
+      update({ selectedLayerIds: [id] });
+    }
+  });
+
+  // double-click / double-tap → reset this layer's rotation to 0
+  imgNode.on("dblclick dbltap", () => {
+    updateLayer(layer.id, { rotation: 0 });
+  });
+
+  // ---- drag (single, or move the whole multi-selection together) ----
+  imgNode.on("dragstart", () => {
+    // Add this node to draggingLayers so syncLayers won't reset its x/y
+    // if an unrelated state update (e.g. storage refresh) fires mid-drag.
+    draggingLayers.add(layer.id);
+    layerDragActive = true;
+    const sel = getState().selectedLayerIds || [];
+    isGroupDragging = sel.length > 1 && sel.includes(layer.id);
+    groupStart.clear();
+    if (isGroupDragging) {
+      sel.forEach((id) => {
+        draggingLayers.add(id); // protect all selected nodes
+        const n = imageNodes.get(id);
+        if (n) groupStart.set(id, { x: n.x(), y: n.y() });
+      });
+      dragAnchorStart = { x: imgNode.x(), y: imgNode.y() };
+    }
+  });
+  imgNode.on("dragmove", () => {
+    if (isGroupDragging && dragAnchorStart) {
+      const dx = imgNode.x() - dragAnchorStart.x;
+      const dy = imgNode.y() - dragAnchorStart.y;
+      groupStart.forEach((p, id) => {
+        if (id === layer.id) return;
+        const n = imageNodes.get(id);
+        if (n) {
+          n.x(p.x + dx);
+          n.y(p.y + dy);
+        }
+      });
+      transformer.forceUpdate();
+      mainLayer.batchDraw();
+    }
+    // live: notify the inspector. Don't write to state — we'd race with
+    // syncLayers re-applying x/y on the very same frame.
+    emitPreview(layer.id, { x: imgNode.x(), y: imgNode.y() });
+  });
+  imgNode.on("dragend", () => {
+    // Clear dragging guards BEFORE update so syncLayers can write final
+    // positions (update() calls syncLayers synchronously).
+    draggingLayers.clear();
+    layerDragActive = false;
+    if (isGroupDragging && dragAnchorStart) {
+      const dx = imgNode.x() - dragAnchorStart.x;
+      const dy = imgNode.y() - dragAnchorStart.y;
+      const st2 = getState();
+      update({
+        layers: st2.layers.map((l) => {
+          const p = groupStart.get(l.id);
+          return p ? { ...l, x: p.x + dx, y: p.y + dy } : l;
+        }),
+      });
+      isGroupDragging = false;
+      dragAnchorStart = null;
+      groupStart.clear();
+    } else {
+      updateLayer(layer.id, { x: imgNode.x(), y: imgNode.y() });
+    }
+  });
+
+  // ---- transform (resize + rotate handles) --------------------------
+  imgNode.on("transformstart", () => {
+    transformingLayers.add(layer.id);
+  });
+  imgNode.on("transform", () => {
+    // Live preview: compute the effective scale (state.scale × Konva's
+    // transient scaleX) and current rotation. keepRatio=true → sX === sY.
+    const cur = getState().layers.find((l) => l.id === layer.id);
+    const baseScale = cur ? cur.scale : layer.scale;
+    emitPreview(layer.id, {
+      x: imgNode.x(),
+      y: imgNode.y(),
+      scale: baseScale * imgNode.scaleX(),
+      rotation: imgNode.rotation(),
+    });
+  });
+  imgNode.on("transformend", () => {
+    // Store only the absolute scale magnitude — Konva's transient scaleX can go
+    // negative if an anchor is dragged past the opposite side, but we never
+    // mirror items, so the sign is discarded.
+    transformingLayers.delete(layer.id);
+    const sx = imgNode.scaleX();
+    const cur = getState().layers.find((l) => l.id === layer.id);
+    updateLayer(layer.id, {
+      x: imgNode.x(),
+      y: imgNode.y(),
+      scale: Math.abs((cur ? cur.scale : layer.scale) * sx),
+      rotation: imgNode.rotation(),
+    });
+    // reset Konva's transient scale — our state owns the truth
+    imgNode.scaleX(1);
+    imgNode.scaleY(1);
+  });
+
+  groupNodes.set(layer.id, group);
+  imageNodes.set(layer.id, imgNode);
+  return { group, imgNode };
+}
+
+// Apply state → node geometry / clip. Skips x/y while dragging, and all
+// geometry while transforming, so Konva's transient values aren't fought.
+function applyLayerVisual(group, imgNode, layer, item, img) {
+  const w = item.width * layer.scale;
+  const h = item.height * layer.scale;
+  imgNode.image(img);
+  if (!transformingLayers.has(layer.id)) {
+    if (!draggingLayers.has(layer.id)) {
+      imgNode.x(layer.x);
+      imgNode.y(layer.y);
+    }
+    imgNode.width(w);
+    imgNode.height(h);
+    imgNode.offsetX(w / 2);
+    imgNode.offsetY(h / 2);
+    imgNode.rotation(layer.rotation);
+    imgNode.scaleX(1);
+    imgNode.scaleY(1);
+  }
+  imgNode.opacity(layer.opacity);
+  imgNode.visible(!layer.hidden);
+
+  // Half-clip via Group.clipFunc, at the item's own current x so the clip
+  // follows the item when moved (imgNode.x() read dynamically each frame).
+  if (layer.clip === "full") {
+    group.clipFunc(null);
+  } else {
+    const isLeft = layer.clip === "left";
+    group.clipFunc((ctx) => {
+      const cx = imgNode.x();
+      if (isLeft) ctx.rect(0, 0, cx, CANVAS_H);
+      else ctx.rect(cx, 0, CANVAS_W - cx, CANVAS_H);
+    });
+  }
+}
+
+// Attach the transformer to the current selection. Single selection → full
+// resize+rotate; multi → bounding box only (move by drag, delete via key).
+function attachTransformer(selectedLayerIds) {
   const selNodes = (selectedLayerIds || [])
     .map((id) => imageNodes.get(id))
     .filter(Boolean);
@@ -501,11 +552,6 @@ function syncLayers(st) {
   const multi = selNodes.length > 1;
   transformer.resizeEnabled(!multi);
   transformer.rotateEnabled(!multi);
-
-  // 7. Guides (spine / slots / dot grid) on/off.
-  if (guideGroup) guideGroup.visible(st.showGrid !== false);
-
-  mainLayer.batchDraw();
 }
 
 // ---- Export ---------------------------------------------------------------

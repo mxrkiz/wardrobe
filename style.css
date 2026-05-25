@@ -564,6 +564,13 @@ input[type="checkbox"] {
 }
 .btn-group button { padding: 4px; font-size: 12px; }
 
+/* Labels and buttons in the inspector are interactive, not text — don't let a
+   double-click (used to reset a value) leave a lingering text selection. */
+.control > span,
+.control .reset,
+.btn-group > span,
+.btn-group button { user-select: none; }
+
 .layer-list {
   flex: 1;
   overflow-y: auto;

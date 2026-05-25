@@ -65,22 +65,6 @@
               <label class="upload-label" for="upload-category">cat</label>
               <select id="upload-category"></select>
             </div>
-            <div class="upload-row">
-              <label class="upload-label" for="upload-bg">bg</label>
-              <select id="upload-bg" title="background removal mode">
-                <option value="auto">auto · mono → ml</option>
-                <option value="mono">mono only · flood-fill</option>
-                <option value="ml">ml only · @imgly</option>
-                <option value="off">off · keep original</option>
-              </select>
-            </div>
-            <div class="upload-row">
-              <label class="upload-label" for="upload-holes">holes</label>
-              <select id="upload-holes" title="kill isolated bg regions (bag handles etc) — wipes light logos too">
-                <option value="0">keep (logos safe)</option>
-                <option value="1">fill (bag handles)</option>
-              </select>
-            </div>
             <label class="upload-drop" id="upload-drop" for="upload-input">
               <!--
                 visually-hidden (not [hidden]) — iOS Safari sometimes refuses to
