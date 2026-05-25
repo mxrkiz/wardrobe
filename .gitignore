@@ -20,10 +20,15 @@ npm-debug.log*
 .env.*
 !.env.example
 
-# Build artifacts (none yet, but reserve)
+# Build artifacts
 dist/
 build/
 node_modules/
+
+# Test output
+coverage/
+playwright-report/
+test-results/
 
 # Misc
 .cache/

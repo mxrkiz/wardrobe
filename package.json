@@ -1,0 +1,20 @@
+{
+  "name": "wardrobe",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:browser": "vitest run --config vitest.browser.config.js",
+    "test:e2e": "playwright test",
+    "coverage": "vitest run --coverage"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.44.0",
+    "@vitest/browser": "^1.6.0",
+    "@vitest/coverage-v8": "^1.6.0",
+    "canvas": "^3.2.3",
+    "jsdom": "^29.1.1",
+    "vitest": "^1.6.0"
+  }
+}

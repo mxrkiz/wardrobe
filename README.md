@@ -29,6 +29,13 @@ Open `index.html` with **Live Server** in VS Code (or any static HTTP server).
 - PNG export
 - All data lives in your browser's IndexedDB
 
+## To-do
+
+1. **Cross-session outfit sharing** — send/receive outfits between devices and browsers (file export/import or sync)
+2. **GitHub Pages preview** — deploy a live demo via GitHub Pages
+3. **Code clean-up** — Phase C tests, dead-code removal, coverage ≥ 80%
+4. **Custom domain & hosting** — own domain, production deployment
+
 ## Background removal
 
 Background removal runs automatically on upload using a two-stage cascade:
