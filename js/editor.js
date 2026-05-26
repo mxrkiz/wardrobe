@@ -5,6 +5,16 @@
 
 const DEFAULT_BRUSH_PX = 20;
 const MAX_HISTORY = 20;
+const BRUSH_STORAGE_KEY = "wardrobe_brush_px";
+
+function loadBrushSize() {
+  const v = parseInt(localStorage.getItem(BRUSH_STORAGE_KEY) || "", 10);
+  return Number.isFinite(v) && v >= 4 && v <= 100 ? v : DEFAULT_BRUSH_PX;
+}
+
+function saveBrushSize(px) {
+  localStorage.setItem(BRUSH_STORAGE_KEY, String(px));
+}
 
 export function openEditor(layerId, dataUrl, { onDone, onCancel }) {
   const img = new Image();
@@ -82,11 +92,12 @@ function _mount(img, { onDone, onCancel }) {
     "font-size:12px",
     "color:#8b949e",
   ].join(";");
+  const initialBrush = loadBrushSize();
   bar.innerHTML = `
     <span>brush</span>
-    <input type="range" id="_eb_sz" min="4" max="100" value="${DEFAULT_BRUSH_PX}"
+    <input type="range" id="_eb_sz" min="4" max="100" value="${initialBrush}"
            style="width:80px;accent-color:#3fb950">
-    <span id="_eb_v" style="min-width:24px">${DEFAULT_BRUSH_PX}</span><span>px</span>
+    <span id="_eb_v" style="min-width:24px">${initialBrush}</span><span>px</span>
     <span style="flex:1"></span>
     <button id="_eb_undo" disabled
       style="font-family:var(--font-mono);font-size:12px;padding:4px 10px">
@@ -126,7 +137,7 @@ function _mount(img, { onDone, onCancel }) {
   document.body.appendChild(ring);
 
   // ---- brush state ----
-  let brushR     = DEFAULT_BRUSH_PX;
+  let brushR     = initialBrush;
   let isPainting = false;
 
   // ---- undo history ----
@@ -150,6 +161,7 @@ function _mount(img, { onDone, onCancel }) {
   bar.querySelector("#_eb_sz").addEventListener("input", (e) => {
     brushR = parseInt(e.target.value, 10);
     bar.querySelector("#_eb_v").textContent = brushR;
+    saveBrushSize(brushR);
   });
 
   const toCanvas = (clientX, clientY) => {
@@ -237,7 +249,7 @@ function _mount(img, { onDone, onCancel }) {
 
   const onKey = (e) => {
     if (e.key === "Escape") { cleanup(); onCancel(); return; }
-    if (e.key === "z" && (e.ctrlKey || e.metaKey) && !e.shiftKey) {
+    if (e.code === "KeyZ" && (e.ctrlKey || e.metaKey) && !e.shiftKey) {
       e.preventDefault();
       undo();
     }

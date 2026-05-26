@@ -73,6 +73,35 @@ export function subscribe(fn) {
   return () => listeners.delete(fn);
 }
 
+// ---- Undo history ----------------------------------------------------------
+// Tracks snapshots of `layers` only. Canvas moves, scale, rotation, opacity
+// changes are undoable; item add/delete and settings are not.
+
+const MAX_UNDO = 50;
+const undoStack = [];
+
+export function pushUndo(layersSnapshot) {
+  undoStack.push(layersSnapshot.map((l) => ({ ...l })));
+  if (undoStack.length > MAX_UNDO) undoStack.shift();
+}
+
+export function canUndo() {
+  return undoStack.length > 0;
+}
+
+export function undoLayers() {
+  if (!undoStack.length) return;
+  const prev = undoStack.pop();
+  state = { ...state, layers: prev };
+  listeners.forEach((fn) => fn(state));
+  // Persist the undone canvas state.
+  setCanvasState({
+    layers: state.layers,
+    canvasBg: state.canvasBg,
+    showGrid: state.showGrid,
+  }).catch((e) => console.error("persist undo failed:", e));
+}
+
 let saveTimer = null;
 const SAVE_DEBOUNCE_MS = 250; // coalesce rapid canvas edits into one IDB write
 
@@ -205,6 +234,7 @@ export function addLayer(layer) {
 
 /** @param {string} id @param {Partial<CanvasLayer>} patch */
 export function updateLayer(id, patch) {
+  pushUndo(state.layers);
   update({
     layers: state.layers.map((l) => (l.id === id ? { ...l, ...patch } : l)),
   });

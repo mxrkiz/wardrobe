@@ -6,12 +6,23 @@
 import Konva from "konva";
 
 import { CATEGORIES, ALL_CATEGORIES } from "./categories.js";
-import { getState, subscribe, update, updateLayer } from "./state.js";
+import { getState, subscribe, update, updateLayer, pushUndo } from "./state.js";
 import { rectsIntersect, isDarkColor } from "./util.js";
 
 export const CANVAS_W = 640;
 export const CANVAS_H = 960;
 export const SPINE_X = CANVAS_W / 2;
+
+// Keep layer centre within the canvas so items can't be lost off-screen.
+// layer.x / layer.y are the centre point (offsetX=w/2, offsetY=h/2).
+function clampToCanvas(x, y, layer, item) {
+  const hw = (item.width  * layer.scale) / 2;
+  const hh = (item.height * layer.scale) / 2;
+  return {
+    x: Math.max(hw, Math.min(CANVAS_W - hw, x)),
+    y: Math.max(hh, Math.min(CANVAS_H - hh, y)),
+  };
+}
 
 const GRID_STEP = 40;        // dot-grid spacing (logical px)
 const MARQUEE_MIN_PX = 3;    // ignore marquee drags smaller than this
@@ -380,7 +391,26 @@ function syncLayers(st) {
 // returns the pair.
 function createLayerNode(layer, img) {
   const group = new Konva.Group({ name: `layer-${layer.id}` });
-  const imgNode = new Konva.Image({ image: img, draggable: true });
+  const imgNode = new Konva.Image({
+    image: img,
+    draggable: true,
+    // Clamp the dragged node so its centre never leaves the logical canvas.
+    // offsetX/Y = w/2,h/2 so the visual centre coincides with the anchor point.
+    // pos here is the anchor in logical coords (640×960), i.e. the centre.
+    dragBoundFunc(pos) {
+      // Konva passes pos in absolute (screen) coordinates when the stage is
+      // scaled. Convert to logical canvas coords, clamp, then convert back.
+      const sc = stage.scaleX();
+      const lx = pos.x / sc;
+      const ly = pos.y / sc;
+      const hw = this.width()  / 2;
+      const hh = this.height() / 2;
+      return {
+        x: Math.max(hw, Math.min(CANVAS_W - hw, lx)) * sc,
+        y: Math.max(hh, Math.min(CANVAS_H - hh, ly)) * sc,
+      };
+    },
+  });
   group.add(imgNode);
   mainLayer.add(group);
 
@@ -417,25 +447,49 @@ function createLayerNode(layer, img) {
     isGroupDragging = sel.length > 1 && sel.includes(layer.id);
     groupStart.clear();
     if (isGroupDragging) {
+      const stateLayers = getState().layers;
       sel.forEach((id) => {
-        draggingLayers.add(id); // protect all selected nodes
+        draggingLayers.add(id);
         const n = imageNodes.get(id);
+        // Use current Konva node position — at dragstart Konva has already
+        // placed the node at its real position, and imgNode may have shifted
+        // slightly due to the mousedown offset. Reading from Konva here keeps
+        // groupStart in sync with the actual node positions so delta is correct.
         if (n) groupStart.set(id, { x: n.x(), y: n.y() });
+        else {
+          const sl = stateLayers.find((l) => l.id === id);
+          if (sl) groupStart.set(id, { x: sl.x, y: sl.y });
+        }
       });
+      // Anchor start = the Konva node's position BEFORE dragBoundFunc has
+      // a chance to clamp it — i.e. right at dragstart.
       dragAnchorStart = { x: imgNode.x(), y: imgNode.y() };
     }
   });
   imgNode.on("dragmove", () => {
     if (isGroupDragging && dragAnchorStart) {
+      // imgNode is already clamped by dragBoundFunc; derive delta from its
+      // actual (clamped) position so followers never exceed canvas bounds either.
       const dx = imgNode.x() - dragAnchorStart.x;
       const dy = imgNode.y() - dragAnchorStart.y;
+      const st = getState();
+      const itemsById = new Map(st.items.map((i) => [i.id, i]));
       groupStart.forEach((p, id) => {
         if (id === layer.id) return;
         const n = imageNodes.get(id);
-        if (n) {
-          n.x(p.x + dx);
-          n.y(p.y + dy);
+        if (!n) return;
+        const sl = st.layers.find((l) => l.id === id);
+        const it = sl ? itemsById.get(sl.itemId) : null;
+        let nx = p.x + dx;
+        let ny = p.y + dy;
+        if (it && sl) {
+          const hw = (it.width  * sl.scale) / 2;
+          const hh = (it.height * sl.scale) / 2;
+          nx = Math.max(hw, Math.min(CANVAS_W - hw, nx));
+          ny = Math.max(hh, Math.min(CANVAS_H - hh, ny));
         }
+        n.x(nx);
+        n.y(ny);
       });
       transformer.forceUpdate();
       mainLayer.batchDraw();
@@ -453,17 +507,30 @@ function createLayerNode(layer, img) {
       const dx = imgNode.x() - dragAnchorStart.x;
       const dy = imgNode.y() - dragAnchorStart.y;
       const st2 = getState();
+      const itemsById = new Map(st2.items.map((i) => [i.id, i]));
+      pushUndo(st2.layers);
       update({
         layers: st2.layers.map((l) => {
           const p = groupStart.get(l.id);
-          return p ? { ...l, x: p.x + dx, y: p.y + dy } : l;
+          if (!p) return l;
+          const item = itemsById.get(l.itemId);
+          const clamped = item
+            ? clampToCanvas(p.x + dx, p.y + dy, l, item)
+            : { x: p.x + dx, y: p.y + dy };
+          return { ...l, ...clamped };
         }),
       });
       isGroupDragging = false;
       dragAnchorStart = null;
       groupStart.clear();
     } else {
-      updateLayer(layer.id, { x: imgNode.x(), y: imgNode.y() });
+      const st2 = getState();
+      const item = st2.items.find((i) => i.id === layer.itemId);
+      const curLayer = st2.layers.find((l) => l.id === layer.id) || layer;
+      const pos = item
+        ? clampToCanvas(imgNode.x(), imgNode.y(), curLayer, item)
+        : { x: imgNode.x(), y: imgNode.y() };
+      updateLayer(layer.id, pos);
     }
   });
 

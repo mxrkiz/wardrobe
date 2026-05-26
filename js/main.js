@@ -19,6 +19,7 @@ import {
   addLayer,
   loadInitial,
   removeSelected,
+  undoLayers,
 } from "./state.js";
 import {
   initUploadCategorySelect,
@@ -283,6 +284,15 @@ function initKeyboard() {
         target.isContentEditable);
 
     if (inField) return;
+
+    // Global undo: Ctrl+Z / Cmd+Z (no shift = not redo).
+    // e.code is layout-independent — fires on the physical Z key regardless of
+    // the OS keyboard language (Russian, etc.), unlike e.key which gives "я".
+    if (e.code === "KeyZ" && (e.ctrlKey || e.metaKey) && !e.shiftKey) {
+      e.preventDefault();
+      undoLayers();
+      return;
+    }
 
     const st = getState();
     if (
