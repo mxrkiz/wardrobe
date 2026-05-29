@@ -50,6 +50,20 @@ Background removal runs automatically on upload using a two-stage cascade:
 | White item on white background | ML cannot reliably distinguish subject from background. Use the brush editor to cut manually after upload. |
 | Closed loops with same-colour background (e.g. carpet through a bag handle) | Automatic detection fails for textured backgrounds. Touch up with the brush editor. |
 
+## Engineering decisions
+
+### Vanilla JS, no build step
+
+A bundler adds a mandatory compile step between "edit file" and "see result". For a single-developer tool that doesn't ship to a CDN, that round-trip is pure friction. ES module `import` is supported by every modern browser, esm.sh resolves and serves Konva and `@imgly/background-removal` as real ESM bundles, so there is nothing to bundle locally. The `package.json` exists only for the test runner (Vitest + Playwright); it has no effect on the app itself. Removing the build step also means no Webpack config, no `node_modules` in the runtime path, and no source-map confusion — the file you edit *is* the file the browser runs.
+
+### Flood-fill first, ML second
+
+`@imgly/background-removal` downloads a ~100 MB ONNX model on first use and takes several seconds per image. For the common case — a clothing photo shot on a white seamless or a solid studio background — a corner-seeded flood-fill is instantaneous, free, and produces a cleaner cutout than ISNet (no "halo" fringing). The cascade runs flood-fill first and only falls through to the ML model when the corner pixels disagree, i.e. the background is non-uniform. In practice this means the model is invoked maybe 20-30% of the time, which keeps the app fast for the majority of typical wardrobe photos without sacrificing quality for street shots and flats on real-world backgrounds.
+
+### IndexedDB, no backend
+
+Wardrobe is a personal tool. Sending images to a server would require authentication, storage costs, GDPR handling, and a backend to maintain. IndexedDB keeps everything on-device: images (stored as base64 data-URLs), outfit state, and categories all survive browser restarts without a network request. The trade-off is no cross-device sync, which is an accepted limitation listed in the to-do.
+
 ## Structure
 
 ```text
